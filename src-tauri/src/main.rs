@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    pawpack_tmp_lib::run()
+    pawpack_lib::run()
 }
