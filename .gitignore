@@ -28,6 +28,9 @@ src-tauri/gen/
 Thumbs.db
 Desktop.ini
 
+# LLM
+.claude/
+
 # Editor
 .vscode/*
 !.vscode/extensions.json
