@@ -1,5 +1,21 @@
 # PawPack Todo
 
+## Phase 1 — Foundation
+
+- [x] Install Tailwind CSS v4 + shadcn/ui
+- [x] App shell: sidebar nav + main content layout
+- [x] Fix app name / window config (`pawpack-tmp` → `PawPack`, bump window size)
+- [x] Clean up boilerplate (greet command, demo UI)
+
+## Phase 2 — Pack Storage
+
+- [x] Rust commands: `list_packs`, `import_pack`, `delete_pack`
+- [x] Packs stored in `app_data_dir/packs/` with `pack.json` manifest
+- [x] Auto-detect Windows (`.cur` / `.ani`) and Linux (Xcursor) pack formats
+- [x] Parse `install.inf` / `index.theme` for name, author, description
+- [x] Zip import: extract to temp, handle wrapped folder, clean up
+- [x] Browse view: pack grid, import dropdown (`.zip` + folder), delete with confirm
+
 ## Phase 3 — Cursor Preview
 
 - [ ] Parse `.cur` / `.ani` binary formats in Rust (extract pixel data + frame info)
