@@ -8,6 +8,36 @@ use tauri::Manager;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+/// One size-variant image decoded from a `.cur` (or embedded ICO frame).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CurFrame {
+    pub width: u32,
+    pub height: u32,
+    pub hotspot_x: u16,
+    pub hotspot_y: u16,
+    /// RGBA pixels, row-major, `width * height * 4` bytes.
+    pub rgba: Vec<u8>,
+}
+
+/// All size variants inside a single `.cur` file.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CurInfo {
+    pub frames: Vec<CurFrame>,
+}
+
+/// Parsed contents of a `.ani` (RIFF ACON) animated cursor.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AniInfo {
+    /// Number of distinct cursor images in the file.
+    pub frame_count: u32,
+    /// Default display rate in jiffies (1/60 s) from the `anih` chunk.
+    pub display_rate: u32,
+    /// Per-step delays from the optional `rate` chunk; empty when absent.
+    pub per_frame_rates: Vec<u32>,
+    /// Decoded frames in `LIST fram` order.
+    pub frames: Vec<CurInfo>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PackMeta {
     pub id: String,
@@ -250,6 +280,150 @@ fn do_import(app: &tauri::AppHandle, source: &Path, raw_name: &str) -> Result<Pa
     Ok(meta)
 }
 
+// ── Cursor parsers ────────────────────────────────────────────────────────────
+
+/// Decode a `.cur` (or plain `.ico`) byte blob into per-size-variant frames.
+///
+/// Hotspots are read directly from the raw `ICONDIRENTRY` bytes (fields
+/// `xHotspot`/`yHotspot` at offsets +4 / +6 within each 16-byte entry),
+/// which are reused as hotspot coords in CUR files (type == 2).
+fn parse_cur_bytes(data: &[u8]) -> Result<CurInfo, String> {
+    if data.len() < 6 {
+        return Err("CUR/ICO file too short".into());
+    }
+
+    let image_count = u16::from_le_bytes([data[4], data[5]]) as usize;
+
+    // Collect hotspots from raw directory entries (6-byte header + 16 bytes each).
+    let hotspots: Vec<(u16, u16)> = (0..image_count)
+        .map(|i| {
+            let base = 6 + i * 16;
+            if base + 8 > data.len() {
+                return (0, 0);
+            }
+            let hx = u16::from_le_bytes([data[base + 4], data[base + 5]]);
+            let hy = u16::from_le_bytes([data[base + 6], data[base + 7]]);
+            (hx, hy)
+        })
+        .collect();
+
+    let reader = io::Cursor::new(data);
+    let icon_dir =
+        ico::IconDir::read(reader).map_err(|e| format!("ICO/CUR read error: {e}"))?;
+
+    let frames = icon_dir
+        .entries()
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            let (hotspot_x, hotspot_y) = hotspots.get(i).copied().unwrap_or((0, 0));
+            let image = entry.decode().map_err(|e| format!("ICO decode error: {e}"))?;
+            Ok(CurFrame {
+                width: image.width(),
+                height: image.height(),
+                hotspot_x,
+                hotspot_y,
+                rgba: image.rgba_data().to_vec(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    Ok(CurInfo { frames })
+}
+
+/// Walk a `.ani` (RIFF ACON) byte blob and decode every embedded cursor frame.
+///
+/// Layout: `RIFF ACON [ anih … ] [ rate … ] [ LIST fram [ icon … ]+ ]`
+/// All multi-byte values are little-endian.
+fn parse_ani_bytes(data: &[u8]) -> Result<AniInfo, String> {
+    if data.len() < 12 {
+        return Err("ANI file too short".into());
+    }
+    if &data[0..4] != b"RIFF" {
+        return Err("Not a RIFF file".into());
+    }
+    if &data[8..12] != b"ACON" {
+        return Err("Not an ACON (ANI) file".into());
+    }
+
+    let riff_size = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
+    // The RIFF size covers everything after the 8-byte RIFF header.
+    let end = 8usize.saturating_add(riff_size).min(data.len());
+
+    let mut pos = 12usize; // skip "RIFF" + size + "ACON"
+    let mut frame_count = 0u32;
+    let mut display_rate = 0u32;
+    let mut per_frame_rates: Vec<u32> = Vec::new();
+    let mut frames: Vec<CurInfo> = Vec::new();
+
+    while pos + 8 <= end {
+        let chunk_id = &data[pos..pos + 4];
+        let chunk_size =
+            u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap()) as usize;
+        let data_start = pos + 8;
+        let data_end = data_start.saturating_add(chunk_size);
+
+        if data_end > data.len() {
+            break;
+        }
+
+        match chunk_id {
+            b"anih" if chunk_size >= 36 => {
+                let b = &data[data_start..data_end];
+                // ANIHEADER fields (each u32 LE):
+                //   [0] cbSizeof  [1] nFrames  [2] nSteps  [3] iWidth  [4] iHeight
+                //   [5] iBitCount [6] nPlanes  [7] iDispRate [8] bfAttributes
+                frame_count = u32::from_le_bytes(b[4..8].try_into().unwrap());
+                display_rate = u32::from_le_bytes(b[28..32].try_into().unwrap());
+            }
+            b"rate" => {
+                per_frame_rates = data[data_start..data_end]
+                    .chunks_exact(4)
+                    .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                    .collect();
+            }
+            b"LIST"
+                if chunk_size >= 4
+                    && data_end <= data.len()
+                    && &data[data_start..data_start + 4] == b"fram" =>
+            {
+                let mut inner = data_start + 4;
+                while inner + 8 <= data_end {
+                    let inner_id = &data[inner..inner + 4];
+                    let inner_size = u32::from_le_bytes(
+                        data[inner + 4..inner + 8].try_into().unwrap(),
+                    ) as usize;
+                    let inner_start = inner + 8;
+                    let inner_end = inner_start.saturating_add(inner_size);
+
+                    if inner_end > data.len() {
+                        break;
+                    }
+
+                    if inner_id == b"icon" {
+                        if let Ok(info) = parse_cur_bytes(&data[inner_start..inner_end]) {
+                            frames.push(info);
+                        }
+                    }
+
+                    // RIFF pads chunks to 2-byte boundaries.
+                    inner = inner_end + (inner_size & 1);
+                }
+            }
+            _ => {}
+        }
+
+        pos = data_end + (chunk_size & 1);
+    }
+
+    Ok(AniInfo {
+        frame_count,
+        display_rate,
+        per_frame_rates,
+        frames,
+    })
+}
+
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -328,6 +502,36 @@ fn delete_pack(app: tauri::AppHandle, pack_id: String) -> Result<(), String> {
     fs::remove_dir_all(&pack_dir).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn parse_cur(
+    app: tauri::AppHandle,
+    pack_id: String,
+    cursor_name: String,
+) -> Result<CurInfo, String> {
+    let base = packs_dir(&app)?;
+    let path = base.join(&pack_id).join(&cursor_name);
+    if !path.starts_with(&base) {
+        return Err("Invalid path".into());
+    }
+    let data = fs::read(&path).map_err(|e| e.to_string())?;
+    parse_cur_bytes(&data)
+}
+
+#[tauri::command]
+fn parse_ani(
+    app: tauri::AppHandle,
+    pack_id: String,
+    cursor_name: String,
+) -> Result<AniInfo, String> {
+    let base = packs_dir(&app)?;
+    let path = base.join(&pack_id).join(&cursor_name);
+    if !path.starts_with(&base) {
+        return Err("Invalid path".into());
+    }
+    let data = fs::read(&path).map_err(|e| e.to_string())?;
+    parse_ani_bytes(&data)
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -335,7 +539,190 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![list_packs, import_pack, delete_pack])
+        .invoke_handler(tauri::generate_handler![
+            list_packs,
+            import_pack,
+            delete_pack,
+            parse_cur,
+            parse_ani
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal 1×1 32-bit CUR byte blob by hand.
+    ///
+    /// Layout: ICONDIR(6) + ICONDIRENTRY(16) + BITMAPINFOHEADER(40) +
+    ///         XOR pixels(4) + AND mask(4) = 70 bytes total.
+    fn make_cur(hotspot_x: u16, hotspot_y: u16) -> Vec<u8> {
+        let mut buf = Vec::<u8>::with_capacity(70);
+        // ICONDIR (6 bytes)
+        buf.extend_from_slice(&[0, 0]); // reserved
+        buf.extend_from_slice(&[2, 0]); // type = 2 (cursor)
+        buf.extend_from_slice(&[1, 0]); // count = 1
+        // ICONDIRENTRY (16 bytes)  — offsets 6..22
+        buf.push(1); // width
+        buf.push(1); // height
+        buf.push(0); // color count
+        buf.push(0); // reserved
+        buf.extend_from_slice(&hotspot_x.to_le_bytes()); // xHotspot  (file offset 10)
+        buf.extend_from_slice(&hotspot_y.to_le_bytes()); // yHotspot  (file offset 12)
+        buf.extend_from_slice(&48u32.to_le_bytes()); // image size = 48
+        buf.extend_from_slice(&22u32.to_le_bytes()); // image offset = 22
+        // BITMAPINFOHEADER (40 bytes)
+        buf.extend_from_slice(&40u32.to_le_bytes()); // biSize
+        buf.extend_from_slice(&1u32.to_le_bytes()); // biWidth = 1
+        buf.extend_from_slice(&2u32.to_le_bytes()); // biHeight = 2 (XOR+AND rows)
+        buf.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
+        buf.extend_from_slice(&32u16.to_le_bytes()); // biBitCount = 32
+        buf.extend_from_slice(&0u32.to_le_bytes()); // biCompression = BI_RGB
+        buf.extend_from_slice(&0u32.to_le_bytes()); // biSizeImage
+        buf.extend_from_slice(&0u32.to_le_bytes()); // biXPelsPerMeter
+        buf.extend_from_slice(&0u32.to_le_bytes()); // biYPelsPerMeter
+        buf.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed
+        buf.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
+        // XOR pixel row: 1×1 at 32 bpp → 4 bytes (BGRA)
+        buf.extend_from_slice(&[0x00u8, 0x00, 0xFF, 0xFF]); // opaque blue
+        // AND mask row: 1×1 at 1 bpp, padded to 4 bytes
+        buf.extend_from_slice(&[0u8, 0, 0, 0]);
+        buf
+    }
+
+    /// Build a minimal RIFF ACON byte blob with an `anih` chunk so we can
+    /// verify header field extraction without needing real cursor images.
+    fn make_ani_header_only(frame_count: u32, display_rate: u32) -> Vec<u8> {
+        // ANIHEADER: 9 × u32 LE = 36 bytes
+        let mut anih_data = vec![0u8; 36];
+        let write_u32 = |buf: &mut Vec<u8>, off: usize, v: u32| {
+            let b = v.to_le_bytes();
+            buf[off..off + 4].copy_from_slice(&b);
+        };
+        write_u32(&mut anih_data, 0, 36); // cbSizeof
+        write_u32(&mut anih_data, 4, frame_count); // nFrames
+        write_u32(&mut anih_data, 8, frame_count); // nSteps
+        write_u32(&mut anih_data, 28, display_rate); // iDispRate
+
+        let mut buf = Vec::new();
+        // RIFF header (filled in at the end)
+        buf.extend_from_slice(b"RIFF");
+        buf.extend_from_slice(&[0u8; 4]); // size placeholder
+        buf.extend_from_slice(b"ACON");
+        // anih chunk
+        buf.extend_from_slice(b"anih");
+        buf.extend_from_slice(&(36u32).to_le_bytes());
+        buf.extend_from_slice(&anih_data);
+        // Patch RIFF size = total - 8
+        let total = buf.len();
+        let riff_size = (total - 8) as u32;
+        buf[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn cur_hotspot_round_trip() {
+        let data = make_cur(7, 12);
+        let info = parse_cur_bytes(&data).unwrap();
+        assert_eq!(info.frames.len(), 1);
+        let f = &info.frames[0];
+        assert_eq!((f.hotspot_x, f.hotspot_y), (7, 12));
+        assert_eq!(f.width, 1);
+        assert_eq!(f.height, 1);
+        assert_eq!(f.rgba.len(), 4); // 1×1×4 bytes
+    }
+
+    #[test]
+    fn cur_hotspot_zero() {
+        let data = make_cur(0, 0);
+        let info = parse_cur_bytes(&data).unwrap();
+        let f = &info.frames[0];
+        assert_eq!((f.hotspot_x, f.hotspot_y), (0, 0));
+    }
+
+    #[test]
+    fn cur_rejects_short_input() {
+        assert!(parse_cur_bytes(&[0u8; 3]).is_err());
+    }
+
+    #[test]
+    fn ani_anih_fields_parsed() {
+        let data = make_ani_header_only(8, 6);
+        let info = parse_ani_bytes(&data).unwrap();
+        assert_eq!(info.frame_count, 8);
+        assert_eq!(info.display_rate, 6);
+        assert!(info.frames.is_empty()); // no LIST fram chunk
+        assert!(info.per_frame_rates.is_empty());
+    }
+
+    #[test]
+    fn ani_rejects_non_riff() {
+        assert!(parse_ani_bytes(b"WAVE\x00\x00\x00\x00ACON").is_err());
+    }
+
+    #[test]
+    fn ani_rejects_non_acon() {
+        let mut data = make_ani_header_only(1, 1);
+        data[8..12].copy_from_slice(b"WAVE");
+        assert!(parse_ani_bytes(&data).is_err());
+    }
+
+    #[test]
+    fn ani_with_rate_chunk() {
+        let cur_data = make_cur(0, 0);
+        let cur_size = cur_data.len() as u32;
+
+        // rate chunk: 3 delays
+        let rates: [u32; 3] = [3, 6, 9];
+        let rate_data: Vec<u8> = rates.iter().flat_map(|r| r.to_le_bytes()).collect();
+
+        // LIST fram with one icon sub-chunk
+        let icon_content = &cur_data;
+        let mut list_content = Vec::new();
+        list_content.extend_from_slice(b"fram");
+        list_content.extend_from_slice(b"icon");
+        list_content.extend_from_slice(&cur_size.to_le_bytes());
+        list_content.extend_from_slice(icon_content);
+        if cur_size % 2 == 1 {
+            list_content.push(0);
+        }
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"RIFF");
+        buf.extend_from_slice(&[0u8; 4]); // placeholder
+        buf.extend_from_slice(b"ACON");
+
+        // anih
+        let mut anih_data = vec![0u8; 36];
+        anih_data[0..4].copy_from_slice(&36u32.to_le_bytes());
+        anih_data[4..8].copy_from_slice(&1u32.to_le_bytes()); // nFrames
+        anih_data[28..32].copy_from_slice(&4u32.to_le_bytes()); // iDispRate
+        buf.extend_from_slice(b"anih");
+        buf.extend_from_slice(&36u32.to_le_bytes());
+        buf.extend_from_slice(&anih_data);
+
+        // rate
+        buf.extend_from_slice(b"rate");
+        buf.extend_from_slice(&(rate_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&rate_data);
+
+        // LIST fram
+        buf.extend_from_slice(b"LIST");
+        buf.extend_from_slice(&(list_content.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&list_content);
+
+        let riff_size = (buf.len() - 8) as u32;
+        buf[4..8].copy_from_slice(&riff_size.to_le_bytes());
+
+        let info = parse_ani_bytes(&buf).unwrap();
+        assert_eq!(info.frame_count, 1);
+        assert_eq!(info.display_rate, 4);
+        assert_eq!(info.per_frame_rates, vec![3, 6, 9]);
+        assert_eq!(info.frames.len(), 1);
+        assert_eq!(info.frames[0].frames[0].hotspot_x, 0);
+    }
 }

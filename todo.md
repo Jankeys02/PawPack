@@ -18,10 +18,10 @@
 
 ## Phase 3 — Cursor Preview
 
-- [ ] **Parse `.cur` binary format in Rust** ([src-tauri/src/lib.rs](src-tauri/src/lib.rs))
+- [x] **Parse `.cur` binary format in Rust** ([src-tauri/src/lib.rs](src-tauri/src/lib.rs))
   - `.cur` is an ICO-format file; the `ICONDIRENTRY` header holds hotspot `xHotspot`/`yHotspot` as two `uint16` fields — [ICO/CUR format spec](https://en.wikipedia.org/wiki/ICO_(file_format))
   - Use the [`ico` crate](https://docs.rs/ico) or the [`image` crate](https://docs.rs/image) (has ICO support) to decode pixel data; add to [Cargo.toml](src-tauri/Cargo.toml)
-- [ ] **Parse `.ani` binary format in Rust** ([src-tauri/src/lib.rs](src-tauri/src/lib.rs))
+- [x] **Parse `.ani` binary format in Rust** ([src-tauri/src/lib.rs](src-tauri/src/lib.rs))
   - `.ani` is RIFF-ACON: `anih` chunk (frame count, rate, flags), `LIST fram` (each frame is a `.cur`/`.ico`), optional `rate` chunk (per-frame delays) — [ANI format reference](https://www.gdgsoft.com/anituner/help/aniformat.htm)
   - Use the [`riff` crate](https://docs.rs/riff) to walk chunks; decode each frame as ICO
 - [ ] **Render cursor thumbnails on Browse pack cards** ([src/views/Browse.tsx](src/views/Browse.tsx))
