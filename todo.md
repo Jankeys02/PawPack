@@ -52,6 +52,6 @@
 
 ## Fixes / Tech Debt
 
-- [ ] Fix app identifier: `com.jankeys.PawPack` → `com.jankeys.pawpack`
+- [x] Fix app identifier → `com.jankeys.pawpack`
 - [ ] Move `PackMeta` type to shared `src/types.ts` (currently duplicated in Browse.tsx)
 - [ ] Fix unicode-unsafe `slugify` (breaks on non-ASCII folder names)
