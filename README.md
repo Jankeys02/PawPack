@@ -43,6 +43,36 @@ npm run tauri build
 
 Outputs a native installer for your platform under `src-tauri/target/release/bundle/`.
 
+## Project Structure
+
+```
+PawPack/
+├── src/                        # React frontend
+│   ├── components/
+│   │   └── ui/                 # shadcn/ui components (button, dropdown-menu, …)
+│   ├── lib/
+│   │   └── utils.ts            # Tailwind class helper
+│   ├── views/
+│   │   └── Browse.tsx          # Pack browser view
+│   ├── App.tsx                 # Root component & routing
+│   ├── main.tsx                # React entry point
+│   └── index.css               # Global styles / Tailwind directives
+├── src-tauri/                  # Tauri / Rust backend
+│   ├── src/
+│   │   ├── main.rs             # Binary entry point
+│   │   └── lib.rs              # Tauri commands & app logic
+│   ├── capabilities/
+│   │   └── default.json        # Tauri permission scopes
+│   ├── icons/                  # App icons for all platforms
+│   ├── Cargo.toml              # Rust dependencies
+│   └── tauri.conf.json         # Tauri app configuration
+├── public/                     # Static assets served by Vite
+├── index.html                  # Vite HTML entry
+├── vite.config.ts
+├── tsconfig.json
+└── package.json
+```
+
 ## License
 
 MIT
