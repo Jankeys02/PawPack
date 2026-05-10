@@ -30,6 +30,7 @@ Desktop.ini
 
 # LLM
 .claude/
+.CONTINUE.md
 
 # Editor
 .vscode/*
