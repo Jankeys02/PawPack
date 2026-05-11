@@ -24,7 +24,7 @@
 - [x] **Parse `.ani` binary format in Rust** ([src-tauri/src/lib.rs](src-tauri/src/lib.rs))
   - `.ani` is RIFF-ACON: `anih` chunk (frame count, rate, flags), `LIST fram` (each frame is a `.cur`/`.ico`), optional `rate` chunk (per-frame delays) — [ANI format reference](https://www.gdgsoft.com/anituner/help/aniformat.htm)
   - Use the [`riff` crate](https://docs.rs/riff) to walk chunks; decode each frame as ICO
-- [ ] **Render cursor thumbnails on Browse pack cards** ([src/views/Browse.tsx](src/views/Browse.tsx))
+- [x] **Render cursor thumbnails on Browse pack cards** ([src/views/Browse.tsx](src/views/Browse.tsx))
   - Add a Tauri command `get_cursor_thumbnail(pack_id, cursor_name) -> String` that returns a Base64 PNG
   - Display as `<img src={`data:image/png;base64,${b64}`}>` inside `PackCard`
 - [ ] **Pack detail view** — click a card to see all cursors in the pack

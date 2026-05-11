@@ -232,15 +232,39 @@ fn extract_zip(zip_path: &Path, dest: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// If the extracted directory contains exactly one subdirectory (and nothing
-/// else), the zip was wrapped in a folder — return that inner directory as the
-/// real pack root. Otherwise return the directory itself.
+fn has_cursor_files(dir: &Path) -> bool {
+    fs::read_dir(dir)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let p = e.path();
+                p.is_file()
+                    && p.extension()
+                        .and_then(|x| x.to_str())
+                        .map(|x| matches!(x.to_ascii_lowercase().as_str(), "cur" | "ani"))
+                        .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Find the actual pack root inside `extracted`.
+///
+/// Handles zips that wrap everything in a subfolder alongside other files
+/// (READMEs, __MACOSX/, install.inf, etc.) by finding the unique child
+/// directory that actually contains cursor files rather than requiring it to
+/// be the only entry.
 fn find_pack_root(extracted: &Path) -> PathBuf {
-    if let Ok(mut entries) = fs::read_dir(extracted) {
-        if let Some(first) = entries.next().and_then(|e| e.ok()) {
-            if entries.next().is_none() && first.path().is_dir() {
-                return first.path();
-            }
+    if has_cursor_files(extracted) {
+        return extracted.to_path_buf();
+    }
+    if let Ok(entries) = fs::read_dir(extracted) {
+        let cursor_subdirs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir() && has_cursor_files(p))
+            .collect();
+        if let [single] = cursor_subdirs.as_slice() {
+            return single.clone();
         }
     }
     extracted.to_path_buf()
@@ -424,7 +448,93 @@ fn parse_ani_bytes(data: &[u8]) -> Result<AniInfo, String> {
     })
 }
 
+// ── Thumbnail helpers ─────────────────────────────────────────────────────────
+
+/// Return the largest frame by pixel area, along with its dimensions.
+fn best_frame(cur: CurInfo) -> Result<(u32, u32, Vec<u8>), String> {
+    cur.frames
+        .into_iter()
+        .max_by_key(|f| f.width * f.height)
+        .map(|f| (f.width, f.height, f.rgba))
+        .ok_or_else(|| "CUR has no frames".to_string())
+}
+
+/// Find the first `.cur` file in `pack_dir`, falling back to the first `.ani`.
+fn find_first_cursor(pack_dir: &Path) -> Result<PathBuf, String> {
+    let mut first_ani: Option<PathBuf> = None;
+    for entry in fs::read_dir(pack_dir).map_err(|e| e.to_string())?.flatten() {
+        let p = entry.path();
+        if !p.is_file() {
+            continue;
+        }
+        match p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("cur") => return Ok(p),
+            Some("ani") if first_ani.is_none() => first_ani = Some(p),
+            _ => {}
+        }
+    }
+    first_ani.ok_or_else(|| "No cursor files found in pack".to_string())
+}
+
 // ── Commands ──────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn get_cursor_thumbnail(
+    app: tauri::AppHandle,
+    pack_id: String,
+    cursor_name: String,
+) -> Result<String, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use image::{DynamicImage, ImageBuffer, Rgba};
+
+    let base = packs_dir(&app)?;
+
+    let path = if cursor_name.is_empty() {
+        let pack_dir = base.join(&pack_id);
+        if !pack_dir.starts_with(&base) {
+            return Err("Invalid pack id".into());
+        }
+        find_first_cursor(&pack_dir)?
+    } else {
+        let p = base.join(&pack_id).join(&cursor_name);
+        if !p.starts_with(&base) {
+            return Err("Invalid path".into());
+        }
+        p
+    };
+
+    let data = fs::read(&path).map_err(|e| e.to_string())?;
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    let (width, height, rgba) = if ext == "ani" {
+        let ani = parse_ani_bytes(&data)?;
+        let first = ani.frames.into_iter().next().ok_or("ANI has no frames")?;
+        best_frame(first)?
+    } else {
+        best_frame(parse_cur_bytes(&data)?)?
+    };
+
+    let img = DynamicImage::ImageRgba8(
+        ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(width, height, rgba)
+            .ok_or("Failed to create image buffer")?,
+    );
+
+    let mut cursor = io::Cursor::new(Vec::new());
+    img.write_to(&mut cursor, image::ImageOutputFormat::Png)
+        .map_err(|e| e.to_string())?;
+
+    Ok(STANDARD.encode(cursor.into_inner()))
+}
 
 #[tauri::command]
 fn list_packs(app: tauri::AppHandle) -> Result<Vec<PackMeta>, String> {
@@ -544,7 +654,8 @@ pub fn run() {
             import_pack,
             delete_pack,
             parse_cur,
-            parse_ani
+            parse_ani,
+            get_cursor_thumbnail
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -726,3 +837,5 @@ mod tests {
         assert_eq!(info.frames[0].frames[0].hotspot_x, 0);
     }
 }
+
+
