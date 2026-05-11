@@ -56,32 +56,40 @@ function PlatformBadge({ platform }: { platform: PackMeta["platform"] }) {
   );
 }
 
-function CursorThumbnail({ packId }: { packId: string }) {
-  const [src, setSrc] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
+function CursorThumbnails({ packId }: { packId: string }) {
+  const [srcs, setSrcs] = useState<string[]>([]);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    invoke<string>("get_cursor_thumbnail", { packId, cursorName: "" })
-      .then((b64) => { if (!cancelled) setSrc(`data:image/png;base64,${b64}`); })
-      .catch(() => { if (!cancelled) setFailed(true); });
+    invoke<string[]>("get_pack_thumbnails", { packId, limit: 9 })
+      .then((b64s) => {
+        if (!cancelled) {
+          setSrcs(b64s.map((b) => `data:image/png;base64,${b}`));
+          setLoaded(true);
+        }
+      })
+      .catch(() => { if (!cancelled) setLoaded(true); });
     return () => { cancelled = true; };
   }, [packId]);
 
-  if (failed) return null;
+  if (loaded && srcs.length === 0) return null;
 
   return (
-    <div className="flex h-16 items-center justify-center rounded bg-zinc-950/60">
-      {src ? (
-        <img
-          src={src}
-          alt=""
-          className="max-h-12 max-w-12 object-contain"
-          style={{ imageRendering: "pixelated" }}
-        />
-      ) : (
-        <div className="h-8 w-8 animate-pulse rounded bg-zinc-800" />
-      )}
+    <div className="flex h-16 items-center justify-center gap-2 rounded bg-zinc-950/60 px-2">
+      {!loaded
+        ? Array.from({ length: 9 }).map((_, i) => (
+            <div key={i} className="h-8 w-8 animate-pulse rounded bg-zinc-800" />
+          ))
+        : srcs.map((src, i) => (
+            <img
+              key={i}
+              src={src}
+              alt=""
+              className="h-10 w-10 object-contain"
+              style={{ imageRendering: "pixelated" }}
+            />
+          ))}
     </div>
   );
 }
@@ -112,8 +120,8 @@ function PackCard({
 
   return (
     <div className="group flex flex-col gap-3 rounded-sm border border-zinc-800 bg-zinc-900 p-4 transition-colors hover:border-zinc-700">
-      {/* Thumbnail */}
-      <CursorThumbnail packId={pack.id} />
+      {/* Thumbnails */}
+      <CursorThumbnails packId={pack.id} />
 
       {/* Header */}
       <div className="flex items-start justify-between gap-2">

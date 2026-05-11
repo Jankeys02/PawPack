@@ -481,35 +481,11 @@ fn find_first_cursor(pack_dir: &Path) -> Result<PathBuf, String> {
     first_ani.ok_or_else(|| "No cursor files found in pack".to_string())
 }
 
-// ── Commands ──────────────────────────────────────────────────────────────────
-
-#[tauri::command]
-fn get_cursor_thumbnail(
-    app: tauri::AppHandle,
-    pack_id: String,
-    cursor_name: String,
-) -> Result<String, String> {
+fn cursor_path_to_b64(path: &Path) -> Result<String, String> {
     use base64::{engine::general_purpose::STANDARD, Engine};
     use image::{DynamicImage, ImageBuffer, Rgba};
 
-    let base = packs_dir(&app)?;
-
-    let path = if cursor_name.is_empty() {
-        let pack_dir = base.join(&pack_id);
-        if !pack_dir.starts_with(&base) {
-            return Err("Invalid pack id".into());
-        }
-        find_first_cursor(&pack_dir)?
-    } else {
-        let p = base.join(&pack_id).join(&cursor_name);
-        if !p.starts_with(&base) {
-            return Err("Invalid path".into());
-        }
-        p
-    };
-
-    let data = fs::read(&path).map_err(|e| e.to_string())?;
-
+    let data = fs::read(path).map_err(|e| e.to_string())?;
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -529,11 +505,70 @@ fn get_cursor_thumbnail(
             .ok_or("Failed to create image buffer")?,
     );
 
-    let mut cursor = io::Cursor::new(Vec::new());
-    img.write_to(&mut cursor, image::ImageOutputFormat::Png)
+    let mut buf = io::Cursor::new(Vec::new());
+    img.write_to(&mut buf, image::ImageOutputFormat::Png)
         .map_err(|e| e.to_string())?;
 
-    Ok(STANDARD.encode(cursor.into_inner()))
+    Ok(STANDARD.encode(buf.into_inner()))
+}
+
+// ── Commands ──────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn get_cursor_thumbnail(
+    app: tauri::AppHandle,
+    pack_id: String,
+    cursor_name: String,
+) -> Result<String, String> {
+    let base = packs_dir(&app)?;
+    let path = if cursor_name.is_empty() {
+        let pack_dir = base.join(&pack_id);
+        if !pack_dir.starts_with(&base) {
+            return Err("Invalid pack id".into());
+        }
+        find_first_cursor(&pack_dir)?
+    } else {
+        let p = base.join(&pack_id).join(&cursor_name);
+        if !p.starts_with(&base) {
+            return Err("Invalid path".into());
+        }
+        p
+    };
+    cursor_path_to_b64(&path)
+}
+
+#[tauri::command]
+fn get_pack_thumbnails(
+    app: tauri::AppHandle,
+    pack_id: String,
+    limit: usize,
+) -> Result<Vec<String>, String> {
+    let base = packs_dir(&app)?;
+    let pack_dir = base.join(&pack_id);
+    if !pack_dir.starts_with(&base) {
+        return Err("Invalid pack id".into());
+    }
+
+    let mut files: Vec<PathBuf> = fs::read_dir(&pack_dir)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension()
+                    .and_then(|x| x.to_str())
+                    .map(|x| matches!(x.to_ascii_lowercase().as_str(), "cur" | "ani"))
+                    .unwrap_or(false)
+        })
+        .collect();
+
+    files.sort_by_key(|p| p.file_name().map(|n| n.to_os_string()));
+
+    Ok(files
+        .into_iter()
+        .take(limit)
+        .filter_map(|p| cursor_path_to_b64(&p).ok())
+        .collect())
 }
 
 #[tauri::command]
@@ -655,7 +690,8 @@ pub fn run() {
             delete_pack,
             parse_cur,
             parse_ani,
-            get_cursor_thumbnail
+            get_cursor_thumbnail,
+            get_pack_thumbnails
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
