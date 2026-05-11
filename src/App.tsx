@@ -8,6 +8,17 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import Browse from "@/views/Browse";
+import PackDetail from "@/views/PackDetail";
+
+interface PackMeta {
+  id: string;
+  name: string;
+  author: string;
+  description: string;
+  platform: "windows" | "linux" | "unknown";
+  cursor_count: number;
+  imported_at: number;
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -94,6 +105,7 @@ function PlaceholderPanel({ id }: { id: NavId }) {
 
 export default function App() {
   const [active, setActive] = useState<NavId>("browse");
+  const [selectedPack, setSelectedPack] = useState<PackMeta | null>(null);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-zinc-950 font-sans text-zinc-100 select-none">
@@ -125,7 +137,7 @@ export default function App() {
               key={entry.id}
               entry={entry}
               active={active === entry.id}
-              onClick={() => setActive(entry.id)}
+              onClick={() => { setActive(entry.id); setSelectedPack(null); }}
             />
           ))}
         </nav>
@@ -149,12 +161,22 @@ export default function App() {
         <header className="flex h-10 shrink-0 items-center border-b border-zinc-800/60 px-5">
           <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-zinc-600">
             {active}
+            {selectedPack && (
+              <>
+                <span className="mx-1.5 text-zinc-700">/</span>
+                {selectedPack.name}
+              </>
+            )}
           </span>
         </header>
 
         {/* Active panel */}
         {active === "browse" ? (
-          <Browse />
+          selectedPack ? (
+            <PackDetail pack={selectedPack} onBack={() => setSelectedPack(null)} />
+          ) : (
+            <Browse onSelect={setSelectedPack} />
+          )
         ) : (
           <PlaceholderPanel id={active} />
         )}

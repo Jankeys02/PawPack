@@ -97,13 +97,16 @@ function CursorThumbnails({ packId }: { packId: string }) {
 function PackCard({
   pack,
   onDelete,
+  onSelect,
 }: {
   pack: PackMeta;
   onDelete: (id: string) => void;
+  onSelect: (pack: PackMeta) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
 
-  const handleDelete = () => {
+  const handleDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
     if (!confirming) {
       setConfirming(true);
       setTimeout(() => setConfirming(false), 2500);
@@ -119,7 +122,10 @@ function PackCard({
   });
 
   return (
-    <div className="group flex flex-col gap-3 rounded-sm border border-zinc-800 bg-zinc-900 p-4 transition-colors hover:border-zinc-700">
+    <div
+      onClick={() => onSelect(pack)}
+      className="group flex flex-col gap-3 rounded-sm border border-zinc-800 bg-zinc-900 p-4 transition-colors hover:border-zinc-700 cursor-pointer"
+    >
       {/* Thumbnails */}
       <CursorThumbnails packId={pack.id} />
 
@@ -152,7 +158,7 @@ function PackCard({
         </div>
 
         <button
-          onClick={handleDelete}
+          onClick={(e) => handleDelete(e)}
           className={cn(
             "flex items-center gap-1 rounded px-2 py-1 text-xs transition-all",
             confirming
@@ -209,7 +215,7 @@ function EmptyState({ onImport }: { onImport: (mode: "zip" | "folder") => void }
 
 // ── Main view ─────────────────────────────────────────────────────────────────
 
-export default function Browse() {
+export default function Browse({ onSelect }: { onSelect: (pack: PackMeta) => void }) {
   const [packs, setPacks] = useState<PackMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -335,7 +341,7 @@ export default function Browse() {
         <div className="flex-1 overflow-y-auto p-6">
           <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
             {packs.map((pack) => (
-              <PackCard key={pack.id} pack={pack} onDelete={handleDelete} />
+              <PackCard key={pack.id} pack={pack} onDelete={handleDelete} onSelect={onSelect} />
             ))}
           </div>
         </div>

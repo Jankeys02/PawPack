@@ -25,6 +25,14 @@ pub struct CurInfo {
     pub frames: Vec<CurFrame>,
 }
 
+/// One cursor file entry returned by `list_pack_cursors`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CursorEntry {
+    pub name: String,
+    pub kind: String,   // "cur" | "ani"
+    pub thumbnail: String, // base64 PNG, empty string on decode error
+}
+
 /// Parsed contents of a `.ani` (RIFF ACON) animated cursor.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AniInfo {
@@ -648,6 +656,53 @@ fn delete_pack(app: tauri::AppHandle, pack_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn list_pack_cursors(
+    app: tauri::AppHandle,
+    pack_id: String,
+) -> Result<Vec<CursorEntry>, String> {
+    let base = packs_dir(&app)?;
+    let pack_dir = base.join(&pack_id);
+    if !pack_dir.starts_with(&base) {
+        return Err("Invalid pack id".into());
+    }
+
+    let mut files: Vec<PathBuf> = fs::read_dir(&pack_dir)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension()
+                    .and_then(|x| x.to_str())
+                    .map(|x| matches!(x.to_ascii_lowercase().as_str(), "cur" | "ani"))
+                    .unwrap_or(false)
+        })
+        .collect();
+
+    files.sort_by_key(|p| p.file_name().map(|n| n.to_os_string()));
+
+    let entries = files
+        .into_iter()
+        .map(|p| {
+            let name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            let kind = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+                .unwrap_or_default();
+            let thumbnail = cursor_path_to_b64(&p).unwrap_or_default();
+            CursorEntry { name, kind, thumbnail }
+        })
+        .collect();
+
+    Ok(entries)
+}
+
+#[tauri::command]
 fn parse_cur(
     app: tauri::AppHandle,
     pack_id: String,
@@ -691,7 +746,8 @@ pub fn run() {
             parse_cur,
             parse_ani,
             get_cursor_thumbnail,
-            get_pack_thumbnails
+            get_pack_thumbnails,
+            list_pack_cursors
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
