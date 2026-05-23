@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -46,6 +47,24 @@ pub struct AniInfo {
     pub frames: Vec<CurInfo>,
 }
 
+/// A single cursor file mapped to its Windows system role.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CursorAssignment {
+    /// Registry value name, e.g. "Arrow", "Wait", "Hand".
+    pub role: String,
+    /// Filename inside the pack, e.g. "aero_arrow.cur".
+    pub file: String,
+}
+
+/// Result of scanning a pack's cursor files.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PackAssignmentResult {
+    /// Files that matched a known system cursor role.
+    pub assigned: Vec<CursorAssignment>,
+    /// Filenames that could not be matched to any role.
+    pub unmatched: Vec<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PackMeta {
     pub id: String,
@@ -69,6 +88,20 @@ fn packs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .join("packs");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
+}
+
+/// Load per-pack role overrides. Keys are registry role names; values are
+/// filenames (`Some`) or explicit clears (`None` → role gets no file).
+fn load_overrides(pack_dir: &Path) -> HashMap<String, Option<String>> {
+    fs::read_to_string(pack_dir.join("overrides.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_overrides(pack_dir: &Path, overrides: &HashMap<String, Option<String>>) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(overrides).map_err(|e| e.to_string())?;
+    fs::write(pack_dir.join("overrides.json"), json).map_err(|e| e.to_string())
 }
 
 fn now_unix() -> u64 {
@@ -567,20 +600,20 @@ mod windows_cursor {
         match stem.to_ascii_lowercase().as_str() {
             "arrow" | "pointer" | "normal" | "default" => Some("Arrow"),
             "help" | "helpsel" | "arrow_help" => Some("Help"),
-            "appstarting" | "work" | "working" | "arrow_wait" | "busy2" => Some("AppStarting"),
+            "appstarting" | "work" | "working" | "arrow_wait" | "busy2" | "working in bg" => Some("AppStarting"),
             "wait" | "busy" | "hourglass" => Some("Wait"),
             "crosshair" | "cross" | "precision" => Some("Crosshair"),
             "ibeam" | "text" | "beam" => Some("IBeam"),
             "nwpen" | "pen" => Some("NWPen"),
             "no" | "unavailable" | "forbidden" | "nodrop" => Some("No"),
-            "sizens" | "ns" | "sizev" => Some("SizeNS"),
-            "sizewe" | "we" | "sizeh" => Some("SizeWE"),
-            "sizenws" | "nwse" | "sizenw" | "sizenwse" => Some("SizeNWSE"),
-            "sizenes" | "nesw" | "sizene" | "sizenewsw" => Some("SizeNESW"),
+            "sizens" | "ns" | "sizev" | "ver" => Some("SizeNS"),
+            "sizewe" | "we" | "sizeh" | "hor" => Some("SizeWE"),
+            "sizenws" | "nwse" | "sizenw" | "sizenwse" | "diag 1" => Some("SizeNWSE"),
+            "sizenes" | "nesw" | "sizene" | "sizenewsw" | "diag 2" => Some("SizeNESW"),
             "sizeall" | "move" | "fleur" => Some("SizeAll"),
-            "uparrow" | "up" | "alternate" => Some("UpArrow"),
+            "uparrow" | "up" | "alternate" | "alt" => Some("UpArrow"),
             "hand" | "link" | "select" | "handpoint" | "point" | "finger" => Some("Hand"),
-            "pin" | "location" => Some("Pin"),
+            "pin" | "location" | "loaction" => Some("Pin"),
             "person" | "personselect" => Some("Person"),
             _ => None,
         }
@@ -606,49 +639,86 @@ mod windows_cursor {
         Ok(CursorSnapshot { values, scheme })
     }
 
+    /// Scan `source_dir` for cursor files, apply any saved overrides, and return
+    /// matched (assigned) and unmatched files separately.
+    pub fn get_assignments(source_dir: &Path) -> Result<super::PackAssignmentResult, String> {
+        // 1. Auto-detect role for each cursor file.
+        let mut all_files: Vec<String> = Vec::new();
+        let mut role_map: HashMap<String, String> = HashMap::new(); // role → file
+
+        for entry in fs::read_dir(source_dir).map_err(|e| e.to_string())?.flatten() {
+            let path = entry.path();
+            if !path.is_file() { continue; }
+            let ext = path.extension().and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase()).unwrap_or_default();
+            if ext != "cur" && ext != "ani" { continue; }
+            let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+            if let Some(reg_name) = stem_to_reg(stem) {
+                role_map.insert(reg_name.to_string(), file.clone());
+            }
+            all_files.push(file);
+        }
+
+        // 2. Apply per-pack overrides on top of auto-detection.
+        let overrides = super::load_overrides(source_dir);
+        for (role, file_opt) in &overrides {
+            // Remove the overridden role and any assignment that used the same file.
+            role_map.remove(role);
+            match file_opt {
+                Some(file) => {
+                    role_map.retain(|_, f| f != file);
+                    if source_dir.join(file).is_file() {
+                        role_map.insert(role.clone(), file.clone());
+                    }
+                }
+                None => {} // role explicitly cleared; already removed above
+            }
+        }
+
+        // 3. Build result.
+        let assigned: Vec<super::CursorAssignment> = role_map.into_iter()
+            .map(|(role, file)| super::CursorAssignment { role, file })
+            .collect();
+        let assigned_files: Vec<&str> = assigned.iter().map(|a| a.file.as_str()).collect();
+        let unmatched: Vec<String> = all_files.into_iter()
+            .filter(|f| !assigned_files.contains(&f.as_str()))
+            .collect();
+
+        Ok(super::PackAssignmentResult { assigned, unmatched })
+    }
+
     /// Write `HKCU\Control Panel\Cursors` registry values pointing directly at
     /// the cursor files in `source_dir` (the app's own packs directory — no
     /// copy to %SystemRoot% needed, no elevation required).
     ///
-    /// Returns the list of registry value names that were updated.
-    pub fn apply(source_dir: &Path) -> Result<Vec<String>, String> {
+    /// Returns matched and unmatched files.
+    pub fn apply(source_dir: &Path) -> Result<super::PackAssignmentResult, String> {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let reg_key = hkcu
             .open_subkey_with_flags("Control Panel\\Cursors", KEY_SET_VALUE)
             .map_err(|e| format!("Cannot open cursor registry key for writing: {e}"))?;
 
-        let mut applied = Vec::new();
+        let result = get_assignments(source_dir)?;
 
-        for entry in fs::read_dir(source_dir).map_err(|e| e.to_string())?.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_ascii_lowercase())
-                .unwrap_or_default();
-            if ext != "cur" && ext != "ani" {
-                continue;
-            }
+        let file_for_role: HashMap<&str, &str> = result.assigned.iter()
+            .map(|a| (a.role.as_str(), a.file.as_str()))
+            .collect();
 
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default();
-
-            if let Some(reg_name) = stem_to_reg(stem) {
-                let path_str = path.to_string_lossy().into_owned();
+        for &reg_name in CURSOR_REG_NAMES {
+            if let Some(file) = file_for_role.get(reg_name) {
+                let path_str = source_dir.join(file).to_string_lossy().into_owned();
                 reg_key
                     .set_value(reg_name, &path_str)
                     .map_err(|e| format!("Cannot set registry value {reg_name}: {e}"))?;
-                applied.push(reg_name.to_string());
+            } else {
+                // No file for this role — delete the value so Windows falls back to its default.
+                let _ = reg_key.delete_value(reg_name);
             }
         }
 
         call_spi_set_cursors()?;
-        Ok(applied)
+        Ok(result)
     }
 
     /// Restore the registry to a previously captured snapshot and broadcast
@@ -916,7 +986,62 @@ fn parse_ani(
 /// A snapshot of the pre-existing registry values is saved as `revert.json`
 /// beside `pack.json` so the change can later be undone with `revert_pack`.
 #[tauri::command]
-fn apply_pack(app: tauri::AppHandle, pack_id: String) -> Result<Vec<String>, String> {
+fn get_pack_assignments(app: tauri::AppHandle, pack_id: String) -> Result<PackAssignmentResult, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let base = packs_dir(&app)?;
+        let pack_dir = base.join(&pack_id);
+        if !pack_dir.starts_with(&base) {
+            return Err("Invalid pack id".into());
+        }
+        if !pack_dir.is_dir() {
+            return Err("Pack not found".into());
+        }
+        windows_cursor::get_assignments(&pack_dir)
+    }
+    #[cfg(not(target_os = "windows"))]
+    Err("get_pack_assignments is only supported on Windows".into())
+}
+
+/// Persist a manual role→file override for a pack and return the updated assignments.
+///
+/// Pass an empty `file` to explicitly clear a role (it will receive no cursor
+/// even if auto-detection would otherwise assign one).
+#[tauri::command]
+fn set_cursor_override(
+    app: tauri::AppHandle,
+    pack_id: String,
+    role: String,
+    file: String,
+) -> Result<PackAssignmentResult, String> {
+    let base = packs_dir(&app)?;
+    let pack_dir = base.join(&pack_id);
+    if !pack_dir.starts_with(&base) {
+        return Err("Invalid pack id".into());
+    }
+    if !pack_dir.is_dir() {
+        return Err("Pack not found".into());
+    }
+
+    let mut overrides = load_overrides(&pack_dir);
+    if file.is_empty() {
+        // Explicitly clear the role.
+        overrides.insert(role, None);
+    } else {
+        // Remove any other override that already claims this file.
+        overrides.retain(|_, v| v.as_deref() != Some(file.as_str()));
+        overrides.insert(role, Some(file));
+    }
+    save_overrides(&pack_dir, &overrides)?;
+
+    #[cfg(target_os = "windows")]
+    return windows_cursor::get_assignments(&pack_dir);
+    #[cfg(not(target_os = "windows"))]
+    Err("set_cursor_override is only supported on Windows".into())
+}
+
+#[tauri::command]
+fn apply_pack(app: tauri::AppHandle, pack_id: String) -> Result<PackAssignmentResult, String> {
     #[cfg(target_os = "windows")]
     {
         let base = packs_dir(&app)?;
@@ -984,6 +1109,8 @@ pub fn run() {
             get_cursor_thumbnail,
             get_pack_thumbnails,
             list_pack_cursors,
+            get_pack_assignments,
+            set_cursor_override,
             apply_pack,
             revert_pack
         ])

@@ -8,10 +8,42 @@ import {
   RotateCcw,
   Play,
   ShieldAlert,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+
+interface CursorAssignment {
+  role: string;
+  file: string;
+}
+
+interface PackAssignmentResult {
+  assigned: CursorAssignment[];
+  unmatched: string[];
+}
+
+const ROLE_LABELS: Record<string, string> = {
+  Arrow:       "Normal select",
+  Help:        "Help select",
+  AppStarting: "Working in background",
+  Wait:        "Busy",
+  Crosshair:   "Precision select",
+  IBeam:       "Text select",
+  NWPen:       "Handwriting",
+  No:          "Unavailable",
+  SizeNS:      "Vertical resize",
+  SizeWE:      "Horizontal resize",
+  SizeNWSE:    "Diagonal resize ↖↘",
+  SizeNESW:    "Diagonal resize ↗↙",
+  SizeAll:     "Move",
+  UpArrow:     "Alternate select",
+  Hand:        "Link select",
+  Pin:         "Location select",
+  Person:      "Person select",
+};
 
 interface ActivePack {
   id: string;
@@ -33,7 +65,7 @@ type CardStatus =
   | { kind: "idle" }
   | { kind: "applying" }
   | { kind: "reverting" }
-  | { kind: "applied"; count: number }
+  | { kind: "applied"; result: PackAssignmentResult }
   | { kind: "reverted" }
   | { kind: "error"; message: string };
 
@@ -56,6 +88,126 @@ function PlatformBadge({ platform }: { platform: PackMeta["platform"] }) {
   );
 }
 
+const ALL_ROLES = Object.keys(ROLE_LABELS).sort();
+
+function AssignmentsDropdown({ packId, isActive, prefetched }: {
+  packId: string;
+  isActive: boolean;
+  prefetched: PackAssignmentResult | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const [result, setResult] = useState<PackAssignmentResult | null>(prefetched);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState<string | null>(null);
+
+  const toggle = async () => {
+    if (!open && result === null) {
+      setLoading(true);
+      try {
+        setResult(await invoke<PackAssignmentResult>("get_pack_assignments", { packId }));
+      } catch {
+        setResult({ assigned: [], unmatched: [] });
+      } finally {
+        setLoading(false);
+      }
+    }
+    setOpen((v) => !v);
+  };
+
+  const handleRoleChange = async (file: string, currentRole: string | null, newRole: string) => {
+    setSaving(file);
+    try {
+      let updated: PackAssignmentResult;
+      if (!newRole && currentRole) {
+        updated = await invoke<PackAssignmentResult>("set_cursor_override", { packId, role: currentRole, file: "" });
+      } else if (newRole) {
+        updated = await invoke<PackAssignmentResult>("set_cursor_override", { packId, role: newRole, file });
+      } else {
+        return;
+      }
+      setResult(updated);
+      if (isActive) {
+        await invoke("apply_pack", { packId });
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const displayed = result ?? prefetched;
+  const assignedCount = displayed?.assigned.length ?? null;
+  const unmatchedCount = displayed?.unmatched.length ?? 0;
+
+  // Unified rows sorted by filename.
+  const rows: { file: string; role: string | null }[] = [
+    ...(displayed?.assigned.map((a) => ({ file: a.file, role: a.role })) ?? []),
+    ...(displayed?.unmatched.map((f) => ({ file: f, role: null })) ?? []),
+  ].sort((a, b) => a.file.localeCompare(b.file, undefined, { sensitivity: "base" }));
+
+  return (
+    <div className="border-t border-zinc-800/70 pt-2">
+      <button
+        onClick={toggle}
+        className="flex w-full items-center gap-1.5 rounded px-1 py-1 text-xs text-zinc-500 transition-colors hover:text-zinc-300"
+      >
+        {loading ? (
+          <RefreshCw className="h-3 w-3 animate-spin shrink-0" strokeWidth={1.75} />
+        ) : open ? (
+          <ChevronDown className="h-3 w-3 shrink-0" strokeWidth={2} />
+        ) : (
+          <ChevronRight className="h-3 w-3 shrink-0" strokeWidth={2} />
+        )}
+        {assignedCount !== null
+          ? `${assignedCount} cursor role${assignedCount !== 1 ? "s" : ""} assigned${unmatchedCount > 0 ? `, ${unmatchedCount} unrecognized` : ""}`
+          : "View cursor assignments"}
+      </button>
+
+      {open && displayed && rows.length > 0 && (
+        <div className="mt-1.5 rounded border border-zinc-800 bg-zinc-950/60">
+          <div className="grid grid-cols-[1fr_152px_1fr] gap-x-3 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-600">
+            <span>File</span>
+            <span>Role</span>
+            <span>Description</span>
+          </div>
+          <div className="divide-y divide-zinc-800/60">
+            {rows.map(({ file, role }) => (
+              <div
+                key={file}
+                className={cn(
+                  "grid grid-cols-[1fr_152px_1fr] items-center gap-x-3 px-3 py-1",
+                  !role && "opacity-50",
+                )}
+              >
+                <span className="font-mono text-[11px] text-zinc-400 truncate">{file}</span>
+                <select
+                  value={role ?? ""}
+                  disabled={saving === file}
+                  onChange={(e) => handleRoleChange(file, role, e.target.value)}
+                  className="w-full rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 font-mono text-[11px] text-zinc-300 focus:border-amber-500/50 focus:outline-none disabled:opacity-40"
+                >
+                  <option value="">— unassigned —</option>
+                  {ALL_ROLES.map((r) => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                </select>
+                <span className="text-[11px] text-zinc-600 truncate">
+                  {role ? (ROLE_LABELS[role] ?? "—") : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {open && displayed && rows.length === 0 && (
+        <p className="mt-1.5 px-1 text-xs text-zinc-600">No cursor files found.</p>
+      )}
+    </div>
+  );
+}
+
 function PackRow({
   pack,
   isActive,
@@ -74,8 +226,8 @@ function PackRow({
   const handleApply = async () => {
     setStatus({ kind: "applying" });
     try {
-      const applied = await invoke<string[]>("apply_pack", { packId: pack.id });
-      setStatus({ kind: "applied", count: applied.length });
+      const result = await invoke<PackAssignmentResult>("apply_pack", { packId: pack.id });
+      setStatus({ kind: "applied", result });
       onApplied();
     } catch (e) {
       setStatus({ kind: "error", message: String(e) });
@@ -92,6 +244,8 @@ function PackRow({
       setStatus({ kind: "error", message: String(e) });
     }
   };
+
+  const showAssignments = isActive || status.kind === "applied";
 
   return (
     <div className={cn(
@@ -172,7 +326,7 @@ function PackRow({
       {status.kind === "applied" && (
         <div className="flex items-center gap-2 rounded border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
           <CheckCircle2 className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
-          Applied — {status.count} cursor role{status.count !== 1 ? "s" : ""} written.
+          Applied — {status.result.assigned.length} cursor role{status.result.assigned.length !== 1 ? "s" : ""} written.
           Cursors updated immediately.
         </div>
       )}
@@ -193,6 +347,15 @@ function PackRow({
             ✕
           </button>
         </div>
+      )}
+
+      {/* Assignments dropdown */}
+      {showAssignments && (
+        <AssignmentsDropdown
+          packId={pack.id}
+          isActive={isActive}
+          prefetched={status.kind === "applied" ? status.result : null}
+        />
       )}
     </div>
   );
