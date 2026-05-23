@@ -32,6 +32,9 @@ Desktop.ini
 .claude/
 .CONTINUE.md
 
+# Local scripts
+dev.bat
+
 # Editor
 .vscode/*
 !.vscode/extensions.json

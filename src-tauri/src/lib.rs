@@ -684,8 +684,15 @@ mod windows_cursor {
         unsafe {
             // SPIF_UPDATEINIFILE persists to the user profile;
             // SPIF_SENDCHANGE broadcasts WM_SETTINGCHANGE so apps update live.
-            SystemParametersInfoW(SPI_SETCURSORS, 0, None, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE)
-                .map_err(|e| format!("SystemParametersInfoW failed: {e}"))?;
+            //
+            // SPI_SETCURSORS sometimes returns FALSE with GetLastError()==0 on
+            // Windows 10/11 when the legacy win.ini flush is a no-op. Treat that
+            // as success — the registry writes already took effect.
+            if let Err(e) = SystemParametersInfoW(SPI_SETCURSORS, 0, None, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE) {
+                if e.code().0 != 0 {
+                    return Err(format!("SystemParametersInfoW failed: {e}"));
+                }
+            }
         }
         Ok(())
     }
