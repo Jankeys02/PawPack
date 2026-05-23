@@ -27,7 +27,7 @@
 - [x] **Render cursor thumbnails on Browse pack cards** ([src/views/Browse.tsx](src/views/Browse.tsx))
   - Add a Tauri command `get_cursor_thumbnail(pack_id, cursor_name) -> String` that returns a Base64 PNG
   - Display as `<img src={`data:image/png;base64,${b64}`}>` inside `PackCard`
-- [ ] **Pack detail view** — click a card to see all cursors in the pack
+- [x] **Pack detail view** — click a card to see all cursors in the pack
   - New view `src/views/PackDetail.tsx`; add navigation state to [src/App.tsx](src/App.tsx)
   - List all `.cur` / `.ani` files in `packs/<id>/`; show thumbnail grid
 - [ ] **Live cursor preview** — hover a preview area to see the actual rendered cursor
@@ -48,12 +48,12 @@
 
 ## Phase 5 — Apply / Remove
 
-- [ ] **Windows: copy cursor files + write registry** ([src-tauri/src/lib.rs](src-tauri/src/lib.rs))
+- [x] **Windows: copy cursor files + write registry** ([src-tauri/src/lib.rs](src-tauri/src/lib.rs))
   - Copy `.cur` / `.ani` files to `%SystemRoot%\Cursors\<PackName>\`
   - Write `HKCU\Control Panel\Cursors` values: `Arrow`, `Wait`, `IBeam`, `Crosshair`, `SizeNWSE`, `SizeNESW`, `SizeWE`, `SizeNS`, `SizeAll`, `No`, `Hand`, `AppStarting`, `Help`, `Pin`, `Person` — [MSDN cursor registry](https://learn.microsoft.com/en-us/windows/win32/menurc/using-cursors)
   - Use [`winreg` crate](https://docs.rs/winreg) (add to [Cargo.toml](src-tauri/Cargo.toml)) — `cfg(target_os = "windows")` guard
   - Call `SystemParametersInfoW(SPI_SETCURSORS, 0, null, SPIF_SENDCHANGE)` to apply without reboot — [MSDN SystemParametersInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-systemparametersinfow); use [`windows` crate](https://docs.rs/windows)
-- [ ] **Windows: revert to previous / default cursor set**
+- [x] **Windows: revert to previous / default cursor set**
   - Snapshot existing registry values before applying; store snapshot in `pack.json` or a separate `revert.json` in `app_data_dir`
   - Restore snapshot values + call `SPI_SETCURSORS` again
 - [ ] **Linux: install to `~/.icons/`, update active cursor theme**
@@ -61,7 +61,7 @@
   - Update `gtk-cursor-theme-name` in `~/.config/gtk-3.0/settings.ini` and `~/.config/gtk-4.0/settings.ini`
   - Optionally write `Xcursor.theme: <ThemeName>` to `~/.Xresources` and run `xrdb -merge`
   - `cfg(target_os = "linux")` guard in [src-tauri/src/lib.rs](src-tauri/src/lib.rs)
-- [ ] **Apply view UI** — select pack, apply / revert buttons, status feedback
+- [x] **Apply view UI** — select pack, apply / revert buttons, status feedback
   - New view `src/views/Apply.tsx`; wire up in [src/App.tsx](src/App.tsx) (currently placeholder)
   - Show applied pack name + timestamp; disable Apply if already active pack
 

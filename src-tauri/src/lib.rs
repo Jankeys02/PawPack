@@ -520,6 +520,177 @@ fn cursor_path_to_b64(path: &Path) -> Result<String, String> {
     Ok(STANDARD.encode(buf.into_inner()))
 }
 
+// ── Windows cursor apply/revert ───────────────────────────────────────────────
+
+// Items are only reachable from cfg(windows) command bodies; suppress the
+// cross-platform dead-code noise that appears before the crate is first built.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg(target_os = "windows")]
+mod windows_cursor {
+    use std::collections::HashMap;
+    use std::fs;
+    use std::path::Path;
+
+    use serde::{Deserialize, Serialize};
+    use winreg::{
+        enums::{HKEY_CURRENT_USER, KEY_SET_VALUE},
+        RegKey,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SystemParametersInfoW, SPI_SETCURSORS, SPIF_SENDCHANGE, SPIF_UPDATEINIFILE,
+    };
+
+    /// All `HKCU\Control Panel\Cursors` value names we snapshot and restore.
+    const CURSOR_REG_NAMES: &[&str] = &[
+        "Arrow", "Help", "AppStarting", "Wait", "Crosshair", "IBeam",
+        "NWPen", "No", "SizeNS", "SizeWE", "SizeNWSE", "SizeNESW",
+        "SizeAll", "UpArrow", "Hand", "Pin", "Person",
+    ];
+
+    /// Registry snapshot taken before a pack is applied.
+    ///
+    /// `values` maps each cursor registry name to its previous path.
+    /// `None` means the value was absent — on revert we delete it so Windows
+    /// falls back to its built-in default rather than seeing an empty string.
+    /// `scheme` is the `(Default)` value of the Cursors key (the active scheme
+    /// name shown in the control panel), also restored on revert.
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct CursorSnapshot {
+        pub values: HashMap<String, Option<String>>,
+        #[serde(default)]
+        pub scheme: Option<String>,
+    }
+
+    /// Map a cursor file stem (case-insensitive) to its registry value name.
+    /// Returns `None` for files that don't match a known system role.
+    fn stem_to_reg(stem: &str) -> Option<&'static str> {
+        match stem.to_ascii_lowercase().as_str() {
+            "arrow" | "pointer" | "normal" | "default" => Some("Arrow"),
+            "help" | "helpsel" | "arrow_help" => Some("Help"),
+            "appstarting" | "work" | "working" | "arrow_wait" | "busy2" => Some("AppStarting"),
+            "wait" | "busy" | "hourglass" => Some("Wait"),
+            "crosshair" | "cross" | "precision" => Some("Crosshair"),
+            "ibeam" | "text" | "beam" => Some("IBeam"),
+            "nwpen" | "pen" => Some("NWPen"),
+            "no" | "unavailable" | "forbidden" | "nodrop" => Some("No"),
+            "sizens" | "ns" | "sizev" => Some("SizeNS"),
+            "sizewe" | "we" | "sizeh" => Some("SizeWE"),
+            "sizenws" | "nwse" | "sizenw" | "sizenwse" => Some("SizeNWSE"),
+            "sizenes" | "nesw" | "sizene" | "sizenewsw" => Some("SizeNESW"),
+            "sizeall" | "move" | "fleur" => Some("SizeAll"),
+            "uparrow" | "up" | "alternate" => Some("UpArrow"),
+            "hand" | "link" | "select" | "handpoint" | "point" | "finger" => Some("Hand"),
+            "pin" | "location" => Some("Pin"),
+            "person" | "personselect" => Some("Person"),
+            _ => None,
+        }
+    }
+
+    /// Read the current registry state into a snapshot.
+    pub fn snapshot() -> Result<CursorSnapshot, String> {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let key = hkcu
+            .open_subkey("Control Panel\\Cursors")
+            .map_err(|e| format!("Cannot open cursor registry key: {e}"))?;
+
+        let mut values = HashMap::new();
+        for &name in CURSOR_REG_NAMES {
+            // Use Option: None = key absent, Some("") = key present but empty.
+            let val: Option<String> = key.get_value(name).ok();
+            values.insert(name.to_string(), val);
+        }
+
+        // The (Default) value holds the active scheme name (e.g. "Windows Default").
+        let scheme: Option<String> = key.get_value("").ok();
+
+        Ok(CursorSnapshot { values, scheme })
+    }
+
+    /// Write `HKCU\Control Panel\Cursors` registry values pointing directly at
+    /// the cursor files in `source_dir` (the app's own packs directory — no
+    /// copy to %SystemRoot% needed, no elevation required).
+    ///
+    /// Returns the list of registry value names that were updated.
+    pub fn apply(source_dir: &Path) -> Result<Vec<String>, String> {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let reg_key = hkcu
+            .open_subkey_with_flags("Control Panel\\Cursors", KEY_SET_VALUE)
+            .map_err(|e| format!("Cannot open cursor registry key for writing: {e}"))?;
+
+        let mut applied = Vec::new();
+
+        for entry in fs::read_dir(source_dir).map_err(|e| e.to_string())?.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+                .unwrap_or_default();
+            if ext != "cur" && ext != "ani" {
+                continue;
+            }
+
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+
+            if let Some(reg_name) = stem_to_reg(stem) {
+                let path_str = path.to_string_lossy().into_owned();
+                reg_key
+                    .set_value(reg_name, &path_str)
+                    .map_err(|e| format!("Cannot set registry value {reg_name}: {e}"))?;
+                applied.push(reg_name.to_string());
+            }
+        }
+
+        call_spi_set_cursors()?;
+        Ok(applied)
+    }
+
+    /// Restore the registry to a previously captured snapshot and broadcast
+    /// `SPI_SETCURSORS` so the change takes effect immediately.
+    pub fn revert(snapshot: &CursorSnapshot) -> Result<(), String> {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let key = hkcu
+            .open_subkey_with_flags("Control Panel\\Cursors", KEY_SET_VALUE)
+            .map_err(|e| format!("Cannot open cursor registry key for writing: {e}"))?;
+
+        for (name, value) in &snapshot.values {
+            match value {
+                // Key was present with a path — write it back.
+                Some(v) => key
+                    .set_value(name.as_str(), v)
+                    .map_err(|e| format!("Cannot restore registry value {name}: {e}"))?,
+                // Key was absent — delete it so Windows uses its built-in default.
+                // Ignore errors: the key may already be gone.
+                None => { let _ = key.delete_value(name.as_str()); }
+            }
+        }
+
+        // Restore the active scheme name (the (Default) value).
+        match &snapshot.scheme {
+            Some(s) => { let _ = key.set_value("", s); }
+            None    => { let _ = key.delete_value(""); }
+        }
+
+        call_spi_set_cursors()
+    }
+
+    fn call_spi_set_cursors() -> Result<(), String> {
+        unsafe {
+            // SPIF_UPDATEINIFILE persists to the user profile;
+            // SPIF_SENDCHANGE broadcasts WM_SETTINGCHANGE so apps update live.
+            SystemParametersInfoW(SPI_SETCURSORS, 0, None, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE)
+                .map_err(|e| format!("SystemParametersInfoW failed: {e}"))?;
+        }
+        Ok(())
+    }
+}
+
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -732,6 +903,64 @@ fn parse_ani(
     parse_ani_bytes(&data)
 }
 
+/// Copy the pack's cursor files to `%SystemRoot%\Cursors\<pack_id>\`, write the
+/// `HKCU\Control Panel\Cursors` registry values, and call `SPI_SETCURSORS`.
+///
+/// A snapshot of the pre-existing registry values is saved as `revert.json`
+/// beside `pack.json` so the change can later be undone with `revert_pack`.
+#[tauri::command]
+fn apply_pack(app: tauri::AppHandle, pack_id: String) -> Result<Vec<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let base = packs_dir(&app)?;
+        let pack_dir = base.join(&pack_id);
+        if !pack_dir.starts_with(&base) {
+            return Err("Invalid pack id".into());
+        }
+        if !pack_dir.is_dir() {
+            return Err("Pack not found".into());
+        }
+
+        // Snapshot the registry *before* touching anything.
+        let snapshot = windows_cursor::snapshot()?;
+        let snapshot_json = serde_json::to_string_pretty(&snapshot).map_err(|e| e.to_string())?;
+        fs::write(pack_dir.join("revert.json"), &snapshot_json).map_err(|e| e.to_string())?;
+
+        windows_cursor::apply(&pack_dir)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    Err("apply_pack is only supported on Windows".into())
+}
+
+/// Restore the cursor registry to the snapshot saved by the last `apply_pack`
+/// call and broadcast `SPI_SETCURSORS` so the revert takes effect immediately.
+#[tauri::command]
+fn revert_pack(app: tauri::AppHandle, pack_id: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let base = packs_dir(&app)?;
+        let pack_dir = base.join(&pack_id);
+        if !pack_dir.starts_with(&base) {
+            return Err("Invalid pack id".into());
+        }
+
+        let revert_path = pack_dir.join("revert.json");
+        if !revert_path.exists() {
+            return Err("No revert snapshot found — apply this pack first".into());
+        }
+
+        let json = fs::read_to_string(&revert_path).map_err(|e| e.to_string())?;
+        let snapshot: windows_cursor::CursorSnapshot =
+            serde_json::from_str(&json).map_err(|e| e.to_string())?;
+
+        windows_cursor::revert(&snapshot)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    Err("revert_pack is only supported on Windows".into())
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -747,7 +976,9 @@ pub fn run() {
             parse_ani,
             get_cursor_thumbnail,
             get_pack_thumbnails,
-            list_pack_cursors
+            list_pack_cursors,
+            apply_pack,
+            revert_pack
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
