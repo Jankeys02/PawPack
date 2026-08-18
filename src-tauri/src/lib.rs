@@ -724,24 +724,29 @@ fn cursor_path_to_b64(path: &Path) -> Result<String, String> {
 
     if ext == "ani" {
         let ani = parse_ani_bytes(&data)?;
+        let display_rate = ani.display_rate;
+        let rates = ani.per_frame_rates;
 
         // Drop frames with no image variants rather than failing the cursor.
-        let frames: Vec<(u32, u32, Vec<u8>)> = ani
+        // Each delay is zipped to its frame before filtering, so a dropped
+        // frame takes its delay with it instead of shifting the delays of
+        // the frames that follow it out of alignment.
+        let (frames, delays): (Vec<(u32, u32, Vec<u8>)>, Vec<u32>) = ani
             .frames
             .into_iter()
-            .filter_map(|f| best_frame(f).ok())
-            .collect();
+            .enumerate()
+            .filter_map(|(i, f)| {
+                best_frame(f)
+                    .ok()
+                    .map(|fr| (fr, rates.get(i).copied().unwrap_or(display_rate)))
+            })
+            .unzip();
 
         if frames.is_empty() {
             return Err("ANI has no frames".into());
         }
 
         if frames.len() > 1 {
-            let delays: Vec<u32> = if ani.per_frame_rates.is_empty() {
-                vec![ani.display_rate; frames.len()]
-            } else {
-                ani.per_frame_rates
-            };
             return Ok(STANDARD.encode(encode_animated_png(&frames, &delays)?));
         }
 
@@ -2230,6 +2235,16 @@ mod tests {
                 (1, 65535, vec![0u8; 65535 * 4]),
             ];
             assert!(encode_animated_png(&huge, &[4, 4]).is_err());
+        }
+
+        #[test]
+        fn a_smaller_frame_is_centred_not_corner_pinned() {
+            // A 2x1 opaque frame into a 4x3 canvas lands at row 1, col 1.
+            let out = crate::center_on_canvas(2, 1, &[0xAA; 8], 4, 3);
+            assert_eq!(out.len(), 4 * 3 * 4);
+            let lit: Vec<usize> = out.iter().enumerate()
+                .filter(|(_, v)| **v != 0).map(|(i, _)| i).collect();
+            assert_eq!(lit, (20..28).collect::<Vec<_>>());
         }
 
         use crate::cursor_path_to_b64;
