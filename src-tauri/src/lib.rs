@@ -631,8 +631,16 @@ fn encode_animated_png(
         return Err("ANI has no frames".into());
     }
 
-    let canvas_w = frames.iter().map(|(w, _, _)| *w).max().unwrap_or(0);
-    let canvas_h = frames.iter().map(|(_, h, _)| *h).max().unwrap_or(0);
+    let canvas_w = frames
+        .iter()
+        .map(|(w, _, _)| *w)
+        .max()
+        .expect("frames is non-empty");
+    let canvas_h = frames
+        .iter()
+        .map(|(_, h, _)| *h)
+        .max()
+        .expect("frames is non-empty");
     if canvas_w == 0 || canvas_h == 0 {
         return Err("ANI frames have zero size".into());
     }
@@ -650,8 +658,10 @@ fn encode_animated_png(
         let mut encoder = png::Encoder::new(&mut buf, canvas_w, canvas_h);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
-        // The frame count must match the number of frames written below, or
-        // the APNG is malformed. 0 plays means loop forever.
+        // The frame count must match the number of frames written below;
+        // the png crate enforces this itself and writer.finish() below
+        // returns a MissingFrames error on mismatch. 0 plays means loop
+        // forever.
         encoder
             .set_animated(frames.len() as u32, 0)
             .map_err(|e| e.to_string())?;
@@ -1717,12 +1727,17 @@ mod tests {
 
     /// A RIFF ACON blob with `n` identical 1x1 frames and a display rate of 4.
     fn make_ani(n: u32) -> Vec<u8> {
-        let cur_data = make_cur(0, 0);
-        let cur_size = cur_data.len() as u32;
+        let cur_size = make_cur(0, 0).len() as u32;
 
         let mut list_content = Vec::new();
         list_content.extend_from_slice(b"fram");
-        for _ in 0..n {
+        for i in 0..n {
+            // Vary the XOR pixel's green channel (offset 63, see make_cur's
+            // BGRA layout) so frames differ; identical frames could not
+            // reveal reordering or duplication bugs.
+            let mut cur_data = make_cur(0, 0);
+            cur_data[63] = i as u8;
+
             list_content.extend_from_slice(b"icon");
             list_content.extend_from_slice(&cur_size.to_le_bytes());
             list_content.extend_from_slice(&cur_data);
