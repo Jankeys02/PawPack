@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowUp, MoveHorizontal, MoveVertical, Move, Type, MousePointer2, Hand, Ban, HelpCircle, Crosshair, Clock, Loader, MoveUpRight, MoveDownRight, PenLine, MapPin, UserRound } from "lucide-react";
+import { CURSOR_ROLES } from "@/lib/roles";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -19,33 +19,14 @@ interface PackAssignmentResult { assigned: Assignment[]; }
 
 // ── Cursor zones ──────────────────────────────────────────────────────────────
 
-interface Zone {
-  css: string;           // CSS cursor value (fallback when no pack loaded)
-  label: string;
-  reg: string;           // Windows registry key name
-  Icon: React.ComponentType<{ className?: string; strokeWidth?: number }>;
-  color: string;
-}
-
-const ZONES: Zone[] = [
-  { css: "default",      label: "Arrow",       reg: "Arrow",       Icon: MousePointer2,  color: "text-zinc-400"   },
-  { css: "pointer",      label: "Hand / Link", reg: "Hand",        Icon: Hand,           color: "text-amber-400"  },
-  { css: "text",         label: "I-Beam",      reg: "IBeam",       Icon: Type,           color: "text-sky-400"    },
-  { css: "wait",         label: "Wait",        reg: "Wait",        Icon: Clock,          color: "text-orange-400" },
-  { css: "progress",     label: "Working",     reg: "AppStarting", Icon: Loader,         color: "text-yellow-400" },
-  { css: "crosshair",    label: "Crosshair",   reg: "Crosshair",   Icon: Crosshair,      color: "text-emerald-400"},
-  { css: "move",         label: "Move",        reg: "SizeAll",     Icon: Move,           color: "text-violet-400" },
-  { css: "not-allowed",  label: "Unavailable", reg: "No",          Icon: Ban,            color: "text-red-400"    },
-  { css: "help",         label: "Help",        reg: "Help",        Icon: HelpCircle,     color: "text-teal-400"   },
-  { css: "ns-resize",    label: "Resize N↕S",  reg: "SizeNS",      Icon: MoveVertical,   color: "text-cyan-400"   },
-  { css: "ew-resize",    label: "Resize E↔W",  reg: "SizeWE",      Icon: MoveHorizontal, color: "text-cyan-400"   },
-  { css: "nwse-resize",  label: "Resize ↘",    reg: "SizeNWSE",    Icon: MoveDownRight,  color: "text-indigo-400" },
-  { css: "nesw-resize",  label: "Resize ↗",    reg: "SizeNESW",    Icon: MoveUpRight,    color: "text-indigo-400" },
-  { css: "cell",         label: "Alt Select",  reg: "UpArrow",     Icon: ArrowUp,        color: "text-lime-400"   },
-  { css: "alias",        label: "Handwriting", reg: "NWPen",       Icon: PenLine,        color: "text-fuchsia-400"},
-  { css: "copy",         label: "Location",    reg: "Pin",         Icon: MapPin,         color: "text-rose-400"   },
-  { css: "alias",        label: "Person",      reg: "Person",      Icon: UserRound,      color: "text-sky-300"    },
-];
+/// CSS cursor keyword per role, used as the fallback when no pack is applied.
+const ROLE_CSS: Record<string, string> = {
+  Arrow: "default", Hand: "pointer", IBeam: "text", Wait: "wait",
+  AppStarting: "progress", Crosshair: "crosshair", SizeAll: "move",
+  No: "not-allowed", Help: "help", SizeNS: "ns-resize", SizeWE: "ew-resize",
+  SizeNWSE: "nwse-resize", SizeNESW: "nesw-resize", UpArrow: "cell",
+  NWPen: "alias", Pin: "copy", Person: "alias",
+};
 
 // Roles with no CSS equivalent — must be driven by the pack's actual cursor image
 const NO_CSS_ROLES = new Set(["UpArrow", "NWPen", "Pin", "Person"]);
@@ -147,19 +128,19 @@ export default function Debug({ applied }: Props) {
       {/* Grid */}
       <div className="flex-1 overflow-y-auto p-6">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
-          {ZONES.map((z) => (
+          {CURSOR_ROLES.map((role) => (
             <div
-              key={z.reg}
-              style={{ cursor: customCursors[z.reg] ?? z.css }}
+              key={role.reg}
+              style={{ cursor: customCursors[role.reg] ?? ROLE_CSS[role.reg] }}
               className="group flex flex-col items-center justify-center gap-3 rounded-sm border border-zinc-800 bg-zinc-900 px-4 py-6 transition-colors hover:border-zinc-600 hover:bg-zinc-800/60 select-none"
             >
-              <z.Icon
-                className={`h-7 w-7 transition-transform group-hover:scale-110 ${z.color}`}
+              <role.Icon
+                className={`h-7 w-7 transition-transform group-hover:scale-110 ${role.color}`}
                 strokeWidth={1.5}
               />
               <div className="text-center">
-                <p className="text-xs font-medium text-zinc-300">{z.label}</p>
-                <p className="mt-0.5 font-mono text-[10px] text-zinc-600">{z.reg}</p>
+                <p className="text-xs font-medium text-zinc-300">{role.label}</p>
+                <p className="mt-0.5 font-mono text-[10px] text-zinc-600">{role.reg}</p>
               </div>
             </div>
           ))}

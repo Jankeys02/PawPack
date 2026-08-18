@@ -12,6 +12,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ROLE_LABELS } from "@/lib/roles";
 import type { Applied, AppliedTarget } from "@/App";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -31,26 +32,6 @@ interface CursorEntry {
   kind: string;
   thumbnail: string; // base64 PNG, empty string when decoding failed
 }
-
-const ROLE_LABELS: Record<string, string> = {
-  Arrow:       "Normal select",
-  Help:        "Help select",
-  AppStarting: "Working in background",
-  Wait:        "Busy",
-  Crosshair:   "Precision select",
-  IBeam:       "Text select",
-  NWPen:       "Handwriting",
-  No:          "Unavailable",
-  SizeNS:      "Vertical resize",
-  SizeWE:      "Horizontal resize",
-  SizeNWSE:    "Diagonal resize ↖↘",
-  SizeNESW:    "Diagonal resize ↗↙",
-  SizeAll:     "Move",
-  UpArrow:     "Alternate select",
-  Hand:        "Link select",
-  Pin:         "Location select",
-  Person:      "Person select",
-};
 
 interface PackMeta {
   id: string;
