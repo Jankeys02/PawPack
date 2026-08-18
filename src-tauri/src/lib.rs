@@ -609,6 +609,34 @@ fn find_first_cursor(pack_dir: &Path) -> Result<PathBuf, String> {
     first_ani.ok_or_else(|| "No cursor files found in pack".to_string())
 }
 
+/// Longest side of a generated thumbnail, in pixels.
+///
+/// Thumbnails render into 20-40px boxes, so anything larger is downscaled by
+/// the browser regardless. Packs ship cursors up to 256x256 with dozens of
+/// frames: one 46-frame 256x256 cursor decodes to 12 MB of RGBA to produce a
+/// 40px preview. 96 leaves room for a 2x display and, conveniently, leaves the
+/// common 32x32 and 96x96 cursors untouched.
+const THUMBNAIL_MAX_PX: u32 = 96;
+
+/// Downscale one frame so its longest side fits `THUMBNAIL_MAX_PX`, keeping
+/// the aspect ratio. Frames already within the cap are returned untouched, so
+/// the usual cursor sizes are never resampled and stay pixel-exact.
+fn cap_frame(w: u32, h: u32, rgba: Vec<u8>) -> (u32, u32, Vec<u8>) {
+    let expected = w as usize * h as usize * 4;
+    if w.max(h) <= THUMBNAIL_MAX_PX || rgba.len() != expected {
+        return (w, h, rgba);
+    }
+
+    let scale = THUMBNAIL_MAX_PX as f32 / w.max(h) as f32;
+    let nw = ((w as f32 * scale).round() as u32).max(1);
+    let nh = ((h as f32 * scale).round() as u32).max(1);
+
+    let buf = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(w, h, rgba)
+        .expect("buffer length checked above");
+    let out = image::imageops::resize(&buf, nw, nh, image::imageops::FilterType::Triangle);
+    (nw, nh, out.into_raw())
+}
+
 /// Encode RGBA frames as a looping APNG.
 ///
 /// Frames are centred on a canvas sized to the largest width and the largest
@@ -748,6 +776,7 @@ fn cursor_path_to_b64(path: &Path) -> Result<String, String> {
             .filter_map(|(i, f)| {
                 best_frame(f)
                     .ok()
+                    .map(|(w, h, rgba)| cap_frame(w, h, rgba))
                     .map(|fr| (fr, rates.get(i).copied().unwrap_or(display_rate)))
             })
             .unzip();
@@ -765,6 +794,7 @@ fn cursor_path_to_b64(path: &Path) -> Result<String, String> {
     }
 
     let (width, height, rgba) = best_frame(parse_cur_bytes(&data)?)?;
+    let (width, height, rgba) = cap_frame(width, height, rgba);
     Ok(STANDARD.encode(still_png(width, height, rgba)?))
 }
 
@@ -2234,6 +2264,38 @@ mod tests {
             // still needs a delay.
             let out = encode_animated_png(&frames(3, 4, 4), &[7]).unwrap();
             assert_eq!(fctl_delays(&out), vec![(7, 60), (7, 60), (7, 60)]);
+        }
+
+        #[test]
+        fn cap_leaves_common_cursor_sizes_pixel_exact() {
+            // 32x32 and 96x96 are the usual sizes and must not be resampled.
+            let rgba = vec![0xAB; 32 * 32 * 4];
+            let (w, h, out) = crate::cap_frame(32, 32, rgba.clone());
+            assert_eq!((w, h), (32, 32));
+            assert_eq!(out, rgba, "a frame within the cap must be untouched");
+
+            let (w, h, _) = crate::cap_frame(96, 96, vec![0u8; 96 * 96 * 4]);
+            assert_eq!((w, h), (96, 96));
+        }
+
+        #[test]
+        fn cap_downscales_oversized_frames_keeping_aspect_ratio() {
+            let (w, h, out) = crate::cap_frame(256, 256, vec![0u8; 256 * 256 * 4]);
+            assert_eq!((w, h), (96, 96));
+            assert_eq!(out.len(), 96 * 96 * 4);
+
+            // 256x128 keeps its 2:1 shape.
+            let (w, h, _) = crate::cap_frame(256, 128, vec![0u8; 256 * 128 * 4]);
+            assert_eq!((w, h), (96, 48));
+        }
+
+        #[test]
+        fn cap_passes_through_a_buffer_of_the_wrong_length() {
+            // Never panic on malformed input; leave it for the encoder to reject.
+            let short = vec![0u8; 10];
+            let (w, h, out) = crate::cap_frame(256, 256, short.clone());
+            assert_eq!((w, h), (256, 256));
+            assert_eq!(out, short);
         }
 
         #[test]
