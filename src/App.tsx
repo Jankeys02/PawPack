@@ -106,35 +106,51 @@ function PlaceholderPanel({ id }: { id: NavId }) {
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
-interface ActivePack {
-  id: string;
-  name: string;
+/// What is currently applied to the system. Exactly one thing can be.
+export type AppliedTarget =
+  | { kind: "pack"; id: string; name: string }
+  | { kind: "mix" };
+
+export interface Applied {
+  target: AppliedTarget;
   appliedAt: number; // unix ms
 }
 
 const ACTIVE_PACK_KEY = "pawpack:activePack";
 
+function readApplied(): Applied | null {
+  try {
+    const raw = localStorage.getItem(ACTIVE_PACK_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw);
+    if (v && v.target) return v as Applied;
+    // Pre-mix builds stored the pack fields flat, with no target.
+    if (v && typeof v.id === "string") {
+      return {
+        target: { kind: "pack", id: v.id, name: v.name ?? v.id },
+        appliedAt: typeof v.appliedAt === "number" ? v.appliedAt : Date.now(),
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export default function App() {
   const [active, setActive] = useState<NavId>("browse");
   const [selectedPack, setSelectedPack] = useState<PackMeta | null>(null);
-  const [activePack, setActivePack] = useState<ActivePack | null>(() => {
-    try {
-      const raw = localStorage.getItem(ACTIVE_PACK_KEY);
-      return raw ? (JSON.parse(raw) as ActivePack) : null;
-    } catch {
-      return null;
-    }
-  });
+  const [applied, setApplied] = useState<Applied | null>(readApplied);
 
-  const handleApplied = (pack: PackMeta) => {
-    const next: ActivePack = { id: pack.id, name: pack.name, appliedAt: Date.now() };
+  const handleApplied = (target: AppliedTarget) => {
+    const next: Applied = { target, appliedAt: Date.now() };
     localStorage.setItem(ACTIVE_PACK_KEY, JSON.stringify(next));
-    setActivePack(next);
+    setApplied(next);
   };
 
   const handleReverted = () => {
     localStorage.removeItem(ACTIVE_PACK_KEY);
-    setActivePack(null);
+    setApplied(null);
   };
 
   return (
@@ -209,12 +225,12 @@ export default function App() {
           )
         ) : active === "apply" ? (
           <Apply
-            activePack={activePack}
+            applied={applied}
             onApplied={handleApplied}
             onReverted={handleReverted}
           />
         ) : active === "debug" ? (
-          <Debug activePack={activePack} />
+          <Debug applied={applied} />
         ) : (
           <PlaceholderPanel id={active} />
         )}

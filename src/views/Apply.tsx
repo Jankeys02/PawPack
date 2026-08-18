@@ -12,6 +12,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { Applied, AppliedTarget } from "@/App";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -45,12 +46,6 @@ const ROLE_LABELS: Record<string, string> = {
   Person:      "Person select",
 };
 
-interface ActivePack {
-  id: string;
-  name: string;
-  appliedAt: number; // unix ms
-}
-
 interface PackMeta {
   id: string;
   name: string;
@@ -65,7 +60,6 @@ type CardStatus =
   | { kind: "idle" }
   | { kind: "applying" }
   | { kind: "reverting" }
-  | { kind: "applied"; result: PackAssignmentResult }
   | { kind: "reverted" }
   | { kind: "error"; message: string };
 
@@ -211,12 +205,15 @@ function AssignmentsDropdown({ packId, isActive, prefetched }: {
 function PackRow({
   pack,
   isActive,
+  appliedResult,
   onApplied,
   onReverted,
 }: {
   pack: PackMeta;
   isActive: boolean;
-  onApplied: () => void;
+  /** Non-null only when this pack is the applied target. */
+  appliedResult: PackAssignmentResult | null;
+  onApplied: (result: PackAssignmentResult) => void;
   onReverted: () => void;
 }) {
   const [status, setStatus] = useState<CardStatus>({ kind: "idle" });
@@ -227,8 +224,8 @@ function PackRow({
     setStatus({ kind: "applying" });
     try {
       const result = await invoke<PackAssignmentResult>("apply_pack", { packId: pack.id });
-      setStatus({ kind: "applied", result });
-      onApplied();
+      setStatus({ kind: "idle" });
+      onApplied(result);
     } catch (e) {
       setStatus({ kind: "error", message: String(e) });
     }
@@ -245,13 +242,12 @@ function PackRow({
     }
   };
 
-  const showAssignments = isActive || status.kind === "applied";
+  const showAssignments = isActive || appliedResult !== null;
 
   return (
     <div className={cn(
       "flex flex-col gap-3 rounded-sm border bg-zinc-900 p-4 transition-colors",
       isActive ? "border-amber-500/40 bg-amber-500/5" :
-      status.kind === "applied" ? "border-amber-500/30" :
       status.kind === "reverted" ? "border-zinc-700" :
       status.kind === "error" ? "border-red-500/30" :
       "border-zinc-800",
@@ -323,10 +319,10 @@ function PackRow({
       </div>
 
       {/* Status feedback */}
-      {status.kind === "applied" && (
-        <div className="flex items-center gap-2 rounded border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+      {appliedResult && (
+        <div className="flex items-center gap-2 rounded border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
           <CheckCircle2 className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
-          Applied — {status.result.assigned.length} cursor role{status.result.assigned.length !== 1 ? "s" : ""} written.
+          Applied — {appliedResult.assigned.length} cursor role{appliedResult.assigned.length !== 1 ? "s" : ""} written.
           Cursors updated immediately.
         </div>
       )}
@@ -354,7 +350,7 @@ function PackRow({
         <AssignmentsDropdown
           packId={pack.id}
           isActive={isActive}
-          prefetched={status.kind === "applied" ? status.result : null}
+          prefetched={appliedResult}
         />
       )}
     </div>
@@ -378,17 +374,21 @@ function EmptyState() {
 // ── Main view ─────────────────────────────────────────────────────────────────
 
 export default function Apply({
-  activePack,
+  applied,
   onApplied,
   onReverted,
 }: {
-  activePack: ActivePack | null;
-  onApplied: (pack: PackMeta) => void;
+  applied: Applied | null;
+  onApplied: (target: AppliedTarget) => void;
   onReverted: () => void;
 }) {
   const [packs, setPacks] = useState<PackMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** Result of the apply performed in this session, if any. */
+  const [appliedResult, setAppliedResult] = useState<
+    { packId: string; result: PackAssignmentResult } | null
+  >(null);
 
   const loadPacks = useCallback(async () => {
     setLoading(true);
@@ -410,12 +410,14 @@ export default function Apply({
       <div className="flex items-center justify-between border-b border-zinc-800/60 px-6 py-4">
         <div>
           <h1 className="text-sm font-semibold text-zinc-100">Apply Pack</h1>
-          {activePack ? (
+          {applied ? (
             <p className="text-xs text-zinc-500">
-              <span className="text-amber-400">{activePack.name}</span>
+              <span className="text-amber-400">
+                {applied.target.kind === "pack" ? applied.target.name : "Custom mix"}
+              </span>
               {" "}applied{" "}
               <span className="text-zinc-600">
-                {new Date(activePack.appliedAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+                {new Date(applied.appliedAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
               </span>
             </p>
           ) : !loading && (
@@ -469,9 +471,16 @@ export default function Apply({
               <PackRow
                 key={pack.id}
                 pack={pack}
-                isActive={activePack?.id === pack.id}
-                onApplied={() => onApplied(pack)}
-                onReverted={onReverted}
+                isActive={applied?.target.kind === "pack" && applied.target.id === pack.id}
+                appliedResult={appliedResult?.packId === pack.id ? appliedResult.result : null}
+                onApplied={(result) => {
+                  setAppliedResult({ packId: pack.id, result });
+                  onApplied({ kind: "pack", id: pack.id, name: pack.name });
+                }}
+                onReverted={() => {
+                  setAppliedResult(null);
+                  onReverted();
+                }}
               />
             ))}
           </div>

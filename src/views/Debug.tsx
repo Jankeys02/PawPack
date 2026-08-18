@@ -76,22 +76,23 @@ function frameToCssUrl(frame: CurFrame): string {
 // ── Main view ─────────────────────────────────────────────────────────────────
 
 interface Props {
-  activePack?: { id: string } | null;
+  applied?: { target: { kind: "pack"; id: string } | { kind: "mix" } } | null;
 }
 
-export default function Debug({ activePack }: Props) {
+export default function Debug({ applied }: Props) {
   // role → CSS cursor string built from the pack's actual image
   const [customCursors, setCustomCursors] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    if (!activePack) { setCustomCursors({}); return; }
+    const packId = applied?.target.kind === "pack" ? applied.target.id : null;
+    if (!packId) { setCustomCursors({}); return; }
 
     let cancelled = false;
 
     async function load() {
       try {
         const result = await invoke<PackAssignmentResult>("get_pack_assignments", {
-          packId: activePack!.id,
+          packId,
         });
         const roleToFile = Object.fromEntries(result.assigned.map((a) => [a.role, a.file]));
 
@@ -104,13 +105,13 @@ export default function Debug({ activePack }: Props) {
             let frame: CurFrame | null = null;
             if (file.toLowerCase().endsWith(".ani")) {
               const ani = await invoke<AniInfo>("parse_ani", {
-                packId: activePack!.id,
+                packId,
                 cursorName: file,
               });
               frame = bestFrame(ani.frames[0]?.frames ?? []);
             } else {
               const cur = await invoke<CurInfo>("parse_cur", {
-                packId: activePack!.id,
+                packId,
                 cursorName: file,
               });
               frame = bestFrame(cur.frames);
@@ -129,7 +130,7 @@ export default function Debug({ activePack }: Props) {
 
     load();
     return () => { cancelled = true; };
-  }, [activePack?.id]);
+  }, [applied]);
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
