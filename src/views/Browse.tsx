@@ -291,16 +291,18 @@ export default function Browse({ onSelect }: { onSelect: (pack: PackMeta) => voi
           </button>
 
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                size="sm"
-                disabled={importing}
-                className="gap-2 bg-amber-500 text-zinc-950 hover:bg-amber-400 disabled:opacity-60"
-              >
-                <Plus className="h-3.5 w-3.5" strokeWidth={2.5} />
-                {importing ? "Importing…" : "Import Pack"}
-                <ChevronDown className="h-3 w-3 opacity-70" strokeWidth={2.5} />
-              </Button>
+            <DropdownMenuTrigger
+              disabled={importing}
+              render={
+                <Button
+                  size="sm"
+                  className="gap-2 bg-amber-500 text-zinc-950 hover:bg-amber-400 disabled:opacity-60"
+                />
+              }
+            >
+              <Plus className="h-3.5 w-3.5" strokeWidth={2.5} />
+              {importing ? "Importing…" : "Import Pack"}
+              <ChevronDown className="h-3 w-3 opacity-70" strokeWidth={2.5} />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-44">
               <DropdownMenuItem onClick={() => handleImport("zip")} className="gap-2">
