@@ -65,6 +65,35 @@ pub struct PackAssignmentResult {
     pub unmatched: Vec<String>,
 }
 
+/// One role in the mix, resolved to the pack and file that fill it.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MixEntry {
+    pub role: String,
+    /// Pack directory name, e.g. "bog-cursor-pack".
+    pub pack: String,
+    pub file: String,
+}
+
+/// The mix as the UI sees it: entries whose files are present, and entries
+/// left dangling by a deleted pack or file.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct MixResult {
+    pub roles: Vec<MixEntry>,
+    pub stale: Vec<MixEntry>,
+}
+
+/// On-disk shape of `packs/mix.json`.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+struct MixFile {
+    roles: HashMap<String, MixRef>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct MixRef {
+    pack: String,
+    file: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PackMeta {
     pub id: String,
@@ -102,6 +131,64 @@ fn load_overrides(pack_dir: &Path) -> HashMap<String, Option<String>> {
 fn save_overrides(pack_dir: &Path, overrides: &HashMap<String, Option<String>>) -> Result<(), String> {
     let json = serde_json::to_string_pretty(overrides).map_err(|e| e.to_string())?;
     fs::write(pack_dir.join("overrides.json"), json).map_err(|e| e.to_string())
+}
+
+fn mix_path(packs_base: &Path) -> PathBuf {
+    packs_base.join("mix.json")
+}
+
+/// Read `mix.json`, treating an absent or unparseable file as an empty mix.
+/// Losing a corrupt mix is recoverable; refusing to open the tab is not.
+fn load_mix(packs_base: &Path) -> MixFile {
+    fs::read_to_string(mix_path(packs_base))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Split the stored mix into usable and stale entries.
+///
+/// Stale entries are reported but deliberately left in `mix.json`: a pack that
+/// is deleted and reimported under the same id gets its assignments back.
+pub fn read_mix(packs_base: &Path) -> MixResult {
+    let mix = load_mix(packs_base);
+    let mut roles = Vec::new();
+    let mut stale = Vec::new();
+
+    for (role, r) in mix.roles {
+        let entry = MixEntry { role, pack: r.pack, file: r.file };
+        if packs_base.join(&entry.pack).join(&entry.file).is_file() {
+            roles.push(entry);
+        } else {
+            stale.push(entry);
+        }
+    }
+
+    roles.sort_by(|a, b| a.role.cmp(&b.role));
+    stale.sort_by(|a, b| a.role.cmp(&b.role));
+    MixResult { roles, stale }
+}
+
+/// Set or clear one role. An empty `pack` clears it.
+pub fn write_mix_role(
+    packs_base: &Path,
+    role: &str,
+    pack: &str,
+    file: &str,
+) -> Result<MixResult, String> {
+    let mut mix = load_mix(packs_base);
+    if pack.is_empty() {
+        mix.roles.remove(role);
+    } else {
+        mix.roles.insert(
+            role.to_string(),
+            MixRef { pack: pack.to_string(), file: file.to_string() },
+        );
+    }
+
+    let json = serde_json::to_string_pretty(&mix).map_err(|e| e.to_string())?;
+    fs::write(mix_path(packs_base), json).map_err(|e| e.to_string())?;
+    Ok(read_mix(packs_base))
 }
 
 fn now_unix() -> u64 {
@@ -1611,6 +1698,110 @@ mod tests {
             let (_, link) = role_match("Link pointer").unwrap();
             let (_, plain) = role_match("Pointer").unwrap();
             assert!(link < plain, "specific keyword must outrank generic one");
+        }
+    }
+
+    mod mix {
+        use crate::{read_mix, write_mix_role};
+        use std::fs;
+        use std::path::PathBuf;
+
+        /// Fresh packs dir with one real pack holding one real cursor file.
+        fn scratch(tag: &str) -> PathBuf {
+            let base = std::env::temp_dir().join(format!(
+                "pawpack-mix-{tag}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(base.join("pack-a")).unwrap();
+            fs::write(base.join("pack-a").join("Arrow.cur"), b"not a real cursor").unwrap();
+            base
+        }
+
+        #[test]
+        fn round_trips_through_disk() {
+            let base = scratch("round");
+            write_mix_role(&base, "Arrow", "pack-a", "Arrow.cur").unwrap();
+
+            let mix = read_mix(&base);
+            assert_eq!(mix.roles.len(), 1);
+            assert_eq!(mix.roles[0].role, "Arrow");
+            assert_eq!(mix.roles[0].pack, "pack-a");
+            assert_eq!(mix.roles[0].file, "Arrow.cur");
+            assert!(mix.stale.is_empty());
+
+            fs::remove_dir_all(&base).ok();
+        }
+
+        #[test]
+        fn empty_pack_id_clears_the_role() {
+            let base = scratch("clear");
+            write_mix_role(&base, "Arrow", "pack-a", "Arrow.cur").unwrap();
+            let mix = write_mix_role(&base, "Arrow", "", "").unwrap();
+
+            assert!(mix.roles.is_empty());
+            assert!(mix.stale.is_empty());
+
+            fs::remove_dir_all(&base).ok();
+        }
+
+        #[test]
+        fn missing_pack_becomes_stale() {
+            let base = scratch("nopack");
+            write_mix_role(&base, "Arrow", "pack-a", "Arrow.cur").unwrap();
+            fs::remove_dir_all(base.join("pack-a")).unwrap();
+
+            let mix = read_mix(&base);
+            assert!(mix.roles.is_empty(), "entry must not count as usable");
+            assert_eq!(mix.stale.len(), 1);
+            assert_eq!(mix.stale[0].pack, "pack-a");
+
+            fs::remove_dir_all(&base).ok();
+        }
+
+        #[test]
+        fn missing_file_in_present_pack_becomes_stale() {
+            let base = scratch("nofile");
+            write_mix_role(&base, "Arrow", "pack-a", "Gone.cur").unwrap();
+
+            let mix = read_mix(&base);
+            assert!(mix.roles.is_empty());
+            assert_eq!(mix.stale.len(), 1);
+            assert_eq!(mix.stale[0].file, "Gone.cur");
+
+            fs::remove_dir_all(&base).ok();
+        }
+
+        #[test]
+        fn stale_entries_are_not_erased_from_disk() {
+            let base = scratch("keep");
+            write_mix_role(&base, "Arrow", "pack-a", "Arrow.cur").unwrap();
+            fs::rename(base.join("pack-a"), base.join("pack-moved")).unwrap();
+            assert_eq!(read_mix(&base).stale.len(), 1);
+
+            // Reimporting under the same id restores the entry.
+            fs::rename(base.join("pack-moved"), base.join("pack-a")).unwrap();
+            assert_eq!(read_mix(&base).roles.len(), 1);
+
+            fs::remove_dir_all(&base).ok();
+        }
+
+        #[test]
+        fn corrupt_file_reads_as_empty_mix() {
+            let base = scratch("corrupt");
+            fs::write(base.join("mix.json"), b"{ this is not json").unwrap();
+
+            let mix = read_mix(&base);
+            assert!(mix.roles.is_empty());
+            assert!(mix.stale.is_empty());
+
+            // And a write recovers the file rather than failing.
+            write_mix_role(&base, "Hand", "pack-a", "Arrow.cur").unwrap();
+            assert_eq!(read_mix(&base).roles.len(), 1);
+
+            fs::remove_dir_all(&base).ok();
         }
     }
 }
