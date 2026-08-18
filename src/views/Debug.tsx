@@ -65,34 +65,40 @@ export default function Debug({ applied }: Props) {
   const [customCursors, setCustomCursors] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    const packId = applied?.target.kind === "pack" ? applied.target.id : null;
-    if (!packId) { setCustomCursors({}); return; }
+    if (!applied) { setCustomCursors({}); return; }
 
     let cancelled = false;
 
     async function load() {
       try {
-        const result = await invoke<PackAssignmentResult>("get_pack_assignments", {
-          packId,
-        });
-        const roleToFile = Object.fromEntries(result.assigned.map((a) => [a.role, a.file]));
+        // role → [packId, file], from whichever thing is applied.
+        let roleToSource: Record<string, [string, string]> = {};
+        if (applied?.target.kind === "mix") {
+          const mix = await invoke<{ roles: { role: string; pack: string; file: string }[] }>("get_mix");
+          roleToSource = Object.fromEntries(mix.roles.map((e) => [e.role, [e.pack, e.file]]));
+        } else if (applied?.target.kind === "pack") {
+          const packId = applied.target.id;
+          const result = await invoke<PackAssignmentResult>("get_pack_assignments", { packId });
+          roleToSource = Object.fromEntries(result.assigned.map((a) => [a.role, [packId, a.file]]));
+        }
 
         const cursors: Record<string, string> = {};
 
         for (const role of NO_CSS_ROLES) {
-          const file = roleToFile[role];
-          if (!file) continue;
+          const source = roleToSource[role];
+          if (!source) continue;
+          const [sourcePack, file] = source;
           try {
             let frame: CurFrame | null = null;
             if (file.toLowerCase().endsWith(".ani")) {
               const ani = await invoke<AniInfo>("parse_ani", {
-                packId,
+                packId: sourcePack,
                 cursorName: file,
               });
               frame = bestFrame(ani.frames[0]?.frames ?? []);
             } else {
               const cur = await invoke<CurInfo>("parse_cur", {
-                packId,
+                packId: sourcePack,
                 cursorName: file,
               });
               frame = bestFrame(cur.frames);

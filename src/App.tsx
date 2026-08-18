@@ -6,11 +6,13 @@ import {
   Settings,
   PawPrint,
   FlaskConical,
+  Shuffle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import Browse from "@/views/Browse";
 import PackDetail from "@/views/PackDetail";
 import Apply from "@/views/Apply";
+import Mix from "@/views/Mix";
 import Debug from "@/views/Debug";
 
 interface PackMeta {
@@ -25,7 +27,7 @@ interface PackMeta {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type NavId = "browse" | "editor" | "apply" | "debug" | "settings";
+type NavId = "browse" | "editor" | "apply" | "mix" | "debug" | "settings";
 
 interface NavEntry {
   id: NavId;
@@ -39,6 +41,7 @@ const mainNav: NavEntry[] = [
   { id: "browse",  label: "Browse",  Icon: Layers         },
   { id: "editor",  label: "Editor",  Icon: Pencil         },
   { id: "apply",   label: "Apply",   Icon: MousePointer2  },
+  { id: "mix",     label: "Mix",     Icon: Shuffle        },
   { id: "debug",   label: "Debug",   Icon: FlaskConical   },
 ];
 
@@ -229,6 +232,8 @@ export default function App() {
             onApplied={handleApplied}
             onReverted={handleReverted}
           />
+        ) : active === "mix" ? (
+          <Mix applied={applied} onApplied={handleApplied} />
         ) : active === "debug" ? (
           <Debug applied={applied} />
         ) : (
