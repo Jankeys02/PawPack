@@ -26,6 +26,12 @@ interface PackAssignmentResult {
   unmatched: string[];
 }
 
+interface CursorEntry {
+  name: string;
+  kind: string;
+  thumbnail: string; // base64 PNG, empty string when decoding failed
+}
+
 const ROLE_LABELS: Record<string, string> = {
   Arrow:       "Normal select",
   Help:        "Help select",
@@ -93,6 +99,7 @@ function AssignmentsDropdown({ packId, isActive, prefetched }: {
   const [result, setResult] = useState<PackAssignmentResult | null>(prefetched);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
+  const [thumbs, setThumbs] = useState<Record<string, string>>({});
 
   const toggle = async () => {
     if (!open && result === null) {
@@ -103,6 +110,14 @@ function AssignmentsDropdown({ packId, isActive, prefetched }: {
         setResult({ assigned: [], unmatched: [] });
       } finally {
         setLoading(false);
+      }
+    }
+    if (!open && Object.keys(thumbs).length === 0) {
+      try {
+        const cursors = await invoke<CursorEntry[]>("list_pack_cursors", { packId });
+        setThumbs(Object.fromEntries(cursors.map((c) => [c.name, c.thumbnail])));
+      } catch {
+        // Leave thumbs empty; rows fall back to the filename alone.
       }
     }
     setOpen((v) => !v);
@@ -160,7 +175,8 @@ function AssignmentsDropdown({ packId, isActive, prefetched }: {
 
       {open && displayed && rows.length > 0 && (
         <div className="mt-1.5 rounded border border-zinc-800 bg-zinc-950/60">
-          <div className="grid grid-cols-[1fr_152px_1fr] gap-x-3 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-600">
+          <div className="grid grid-cols-[32px_1fr_152px_1fr] gap-x-3 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-600">
+            <span className="w-8" />
             <span>File</span>
             <span>Role</span>
             <span>Description</span>
@@ -170,10 +186,22 @@ function AssignmentsDropdown({ packId, isActive, prefetched }: {
               <div
                 key={file}
                 className={cn(
-                  "grid grid-cols-[1fr_152px_1fr] items-center gap-x-3 px-3 py-1",
+                  "grid grid-cols-[32px_1fr_152px_1fr] items-center gap-x-3 px-3 py-1",
                   !role && "opacity-50",
                 )}
               >
+                <td className="py-1 pl-1">
+                  {thumbs[file] ? (
+                    <img
+                      src={`data:image/png;base64,${thumbs[file]}`}
+                      alt=""
+                      className="h-5 w-5 object-contain"
+                      style={{ imageRendering: "pixelated" }}
+                    />
+                  ) : (
+                    <span className="block h-5 w-5 rounded-sm bg-zinc-800/60" />
+                  )}
+                </td>
                 <span className="font-mono text-[11px] text-zinc-400 truncate">{file}</span>
                 <select
                   value={role ?? ""}
