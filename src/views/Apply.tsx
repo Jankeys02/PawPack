@@ -190,7 +190,7 @@ function AssignmentsDropdown({ packId, isActive, prefetched }: {
                   !role && "opacity-50",
                 )}
               >
-                <td className="py-1 pl-1">
+                <span className="py-1 pl-1">
                   {thumbs[file] ? (
                     <img
                       src={`data:image/png;base64,${thumbs[file]}`}
@@ -201,7 +201,7 @@ function AssignmentsDropdown({ packId, isActive, prefetched }: {
                   ) : (
                     <span className="block h-5 w-5 rounded-sm bg-zinc-800/60" />
                   )}
-                </td>
+                </span>
                 <span className="font-mono text-[11px] text-zinc-400 truncate">{file}</span>
                 <select
                   value={role ?? ""}
