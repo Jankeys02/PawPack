@@ -547,7 +547,7 @@ fn cursor_path_to_b64(path: &Path) -> Result<String, String> {
     );
 
     let mut buf = io::Cursor::new(Vec::new());
-    img.write_to(&mut buf, image::ImageOutputFormat::Png)
+    img.write_to(&mut buf, image::ImageFormat::Png)
         .map_err(|e| e.to_string())?;
 
     Ok(STANDARD.encode(buf.into_inner()))
