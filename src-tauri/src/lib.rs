@@ -636,6 +636,14 @@ fn encode_animated_png(
     if canvas_w == 0 || canvas_h == 0 {
         return Err("ANI frames have zero size".into());
     }
+    // canvas_w/canvas_h are maxima taken independently across frames, so they
+    // need never have coexisted on one image (e.g. a 65535x1 frame beside a
+    // 1x65535 frame). Without this ceiling, canvas_w * canvas_h * 4 can
+    // overflow u32 or demand a multi-GB allocation for a file no real cursor
+    // produces.
+    if canvas_w as u64 * canvas_h as u64 > 4096 * 4096 {
+        return Err("ANI canvas too large".into());
+    }
 
     let mut buf: Vec<u8> = Vec::new();
     {
@@ -2211,6 +2219,17 @@ mod tests {
         #[test]
         fn rejects_an_empty_frame_list() {
             assert!(encode_animated_png(&[], &[]).is_err());
+        }
+
+        #[test]
+        fn refuses_a_canvas_that_would_overflow_the_allocation() {
+            // Independent maxima: 65535x1 beside 1x65535 gives a canvas whose
+            // byte count overflows u32. Must error, not panic or allocate 4 GB.
+            let huge = vec![
+                (65535, 1, vec![0u8; 65535 * 4]),
+                (1, 65535, vec![0u8; 65535 * 4]),
+            ];
+            assert!(encode_animated_png(&huge, &[4, 4]).is_err());
         }
 
         use crate::cursor_path_to_b64;
