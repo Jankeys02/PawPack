@@ -233,7 +233,7 @@ export default function App() {
             onReverted={handleReverted}
           />
         ) : active === "mix" ? (
-          <Mix applied={applied} onApplied={handleApplied} />
+          <Mix applied={applied} onApplied={handleApplied} onReverted={handleReverted} />
         ) : active === "debug" ? (
           <Debug applied={applied} />
         ) : (

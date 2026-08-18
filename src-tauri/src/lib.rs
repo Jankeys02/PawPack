@@ -1453,18 +1453,10 @@ fn apply_mix(app: tauri::AppHandle) -> Result<ApplyMixResult, String> {
 /// The snapshot is per-install, written once by the first `apply_pack`, so this
 /// always returns to the user's own cursors rather than to a previous pack.
 #[tauri::command]
-fn revert_pack(app: tauri::AppHandle, pack_id: String) -> Result<(), String> {
+fn revert_cursors(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let base = packs_dir(&app)?;
-        let pack_dir = base.join(&pack_id);
-        if !pack_dir.starts_with(&base) {
-            return Err("Invalid pack id".into());
-        }
-
-        if !pack_dir.is_dir() {
-            return Err("Pack not found".into());
-        }
 
         // One snapshot for the whole install, not one per pack: it records the
         // cursors the user had before PawPack ever touched them.
@@ -1481,7 +1473,10 @@ fn revert_pack(app: tauri::AppHandle, pack_id: String) -> Result<(), String> {
     }
 
     #[cfg(not(target_os = "windows"))]
-    Err("revert_pack is only supported on Windows".into())
+    {
+        let _ = app;
+        Err("revert_cursors is only supported on Windows".into())
+    }
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -1503,7 +1498,7 @@ pub fn run() {
             get_pack_assignments,
             set_cursor_override,
             apply_pack,
-            revert_pack,
+            revert_cursors,
             get_mix,
             set_mix_role,
             apply_mix

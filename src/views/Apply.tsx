@@ -242,7 +242,7 @@ function PackRow({
   const handleRevert = async () => {
     setStatus({ kind: "reverting" });
     try {
-      await invoke("revert_pack", { packId: pack.id });
+      await invoke("revert_cursors");
       setStatus({ kind: "idle" });
       onReverted();
     } catch (e) {

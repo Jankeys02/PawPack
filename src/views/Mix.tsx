@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { RefreshCw, AlertCircle, CheckCircle2, Play, Shuffle } from "lucide-react";
+import { RefreshCw, AlertCircle, CheckCircle2, Play, RotateCcw, Shuffle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { CURSOR_ROLES } from "@/lib/roles";
 import type { AppliedTarget, Applied } from "@/App";
@@ -19,15 +19,18 @@ interface PackCursors { pack: PackMeta; cursors: CursorEntry[] }
 export default function Mix({
   applied,
   onApplied,
+  onReverted,
 }: {
   applied: Applied | null;
   onApplied: (target: AppliedTarget) => void;
+  onReverted: () => void;
 }) {
   const [mix, setMix] = useState<MixResult>({ roles: [], stale: [] });
   const [library, setLibrary] = useState<PackCursors[]>([]);
   const [selectedRole, setSelectedRole] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [applying, setApplying] = useState(false);
+  const [reverting, setReverting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ApplyMixResult | null>(null);
 
@@ -95,6 +98,7 @@ export default function Mix({
       setResult(null);
     } catch (e) {
       setError(String(e));
+      setMix(await invoke<MixResult>("get_mix")); // sync UI with whatever the loop wrote before it threw
     }
   };
 
@@ -108,6 +112,19 @@ export default function Mix({
       setError(String(e));
     } finally {
       setApplying(false);
+    }
+  };
+
+  const handleRevert = async () => {
+    setReverting(true);
+    setError(null);
+    try {
+      await invoke("revert_cursors");
+      onReverted();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setReverting(false);
     }
   };
 
@@ -147,6 +164,21 @@ export default function Mix({
               <option key={p.pack.id} value={p.pack.id}>{p.pack.name}</option>
             ))}
           </select>
+          {isActive && (
+            <button
+              onClick={handleRevert}
+              disabled={reverting}
+              title="Restore your original cursors"
+              className="flex h-8 items-center gap-1.5 rounded px-2.5 text-xs text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-300 disabled:pointer-events-none disabled:opacity-40"
+            >
+              {reverting ? (
+                <RefreshCw className="h-3.5 w-3.5 animate-spin" strokeWidth={1.75} />
+              ) : (
+                <RotateCcw className="h-3.5 w-3.5" strokeWidth={1.75} />
+              )}
+              Revert
+            </button>
+          )}
           <button
             onClick={handleApply}
             disabled={applying || filled === 0}
