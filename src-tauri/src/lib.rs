@@ -562,7 +562,7 @@ fn cursor_path_to_b64(path: &Path) -> Result<String, String> {
 mod windows_cursor {
     use std::collections::HashMap;
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use serde::{Deserialize, Serialize};
     use winreg::{
@@ -594,29 +594,183 @@ mod windows_cursor {
         pub scheme: Option<String>,
     }
 
-    /// Map a cursor file stem (case-insensitive) to its registry value name.
-    /// Returns `None` for files that don't match a known system role.
-    fn stem_to_reg(stem: &str) -> Option<&'static str> {
-        match stem.to_ascii_lowercase().as_str() {
-            "arrow" | "pointer" | "normal" | "default" => Some("Arrow"),
-            "help" | "helpsel" | "arrow_help" => Some("Help"),
-            "appstarting" | "work" | "working" | "arrow_wait" | "busy2" | "working in bg" => Some("AppStarting"),
-            "wait" | "busy" | "hourglass" => Some("Wait"),
-            "crosshair" | "cross" | "precision" => Some("Crosshair"),
-            "ibeam" | "text" | "beam" => Some("IBeam"),
-            "nwpen" | "pen" => Some("NWPen"),
-            "no" | "unavailable" | "forbidden" | "nodrop" => Some("No"),
-            "sizens" | "ns" | "sizev" | "ver" => Some("SizeNS"),
-            "sizewe" | "we" | "sizeh" | "hor" => Some("SizeWE"),
-            "sizenws" | "nwse" | "sizenw" | "sizenwse" | "diag 1" => Some("SizeNWSE"),
-            "sizenes" | "nesw" | "sizene" | "sizenewsw" | "diag 2" => Some("SizeNESW"),
-            "sizeall" | "move" | "fleur" => Some("SizeAll"),
-            "uparrow" | "up" | "alternate" | "alt" => Some("UpArrow"),
-            "hand" | "link" | "select" | "handpoint" | "point" | "finger" => Some("Hand"),
-            "pin" | "location" | "loaction" => Some("Pin"),
-            "person" | "personselect" => Some("Person"),
-            _ => None,
+    impl CursorSnapshot {
+        /// The state Windows ships with: every role absent, so the OS falls
+        /// back to its built-in cursors, and no named scheme.
+        pub fn windows_default() -> Self {
+            CursorSnapshot {
+                values: CURSOR_REG_NAMES.iter().map(|n| (n.to_string(), None)).collect(),
+                scheme: None,
+            }
         }
+
+        /// True when any value points inside `packs_base`, meaning this
+        /// captured a state PawPack applied rather than the user's own cursors.
+        pub fn is_pack_owned(&self, packs_base: &Path) -> bool {
+            let base = packs_base.to_string_lossy().to_lowercase();
+            self.values
+                .values()
+                .flatten()
+                .any(|v| v.to_lowercase().starts_with(&base))
+        }
+    }
+
+    /// Keyword → registry role, ordered most specific first.
+    ///
+    /// Filenames are matched keyword-by-keyword rather than by exact stem, so
+    /// packs that decorate their names ("Brushbuddy-link-pointer-static.cur")
+    /// still resolve. Order is the tie-breaker when a name contains several
+    /// keywords: that example holds both "link" and "pointer", and the first
+    /// entry found wins, so it lands on Hand rather than Arrow.
+    ///
+    /// Two consequences worth preserving when editing this table:
+    /// - Longer variants must precede the shorter ones they contain
+    ///   ("crosshair" before "cross", "uparrow" before "up").
+    /// - "select" is last of all. Windows' own names are "Normal Select",
+    ///   "Help Select", "Precision Select" and so on, where the *qualifier*
+    ///   carries the role and a bare "select" only means Hand ("Link Select")
+    ///   once every qualifier has already been ruled out.
+    const ROLE_KEYWORDS: &[(&str, &str)] = &[
+        ("appstarting", "AppStarting"),
+        ("working in bg", "AppStarting"),
+        ("arrow_wait", "AppStarting"),
+        ("busy2", "AppStarting"),
+        ("working", "AppStarting"),
+        ("work", "AppStarting"),
+        ("hourglass", "Wait"),
+        ("loading", "Wait"),
+        ("busy", "Wait"),
+        ("wait", "Wait"),
+        ("helpsel", "Help"),
+        ("arrow_help", "Help"),
+        ("help", "Help"),
+        ("personselect", "Person"),
+        ("person", "Person"),
+        ("handpoint", "Hand"),
+        ("finger", "Hand"),
+        ("link", "Hand"),
+        ("hand", "Hand"),
+        ("point", "Hand"),
+        ("crosshair", "Crosshair"),
+        ("precision", "Crosshair"),
+        ("cross", "Crosshair"),
+        ("unavailable", "No"),
+        ("forbidden", "No"),
+        ("nodrop", "No"),
+        ("no", "No"),
+        ("uparrow", "UpArrow"),
+        ("alternate", "UpArrow"),
+        ("alt", "UpArrow"),
+        ("up", "UpArrow"),
+        ("nwpen", "NWPen"),
+        ("pen", "NWPen"),
+        ("ibeam", "IBeam"),
+        ("beam", "IBeam"),
+        ("text", "IBeam"),
+        ("sizenwse", "SizeNWSE"),
+        ("sizenws", "SizeNWSE"),
+        ("sizenw", "SizeNWSE"),
+        ("nwse", "SizeNWSE"),
+        ("diag 1", "SizeNWSE"),
+        ("sizenewsw", "SizeNESW"),
+        ("sizenes", "SizeNESW"),
+        ("sizene", "SizeNESW"),
+        ("nesw", "SizeNESW"),
+        ("diag 2", "SizeNESW"),
+        ("sizens", "SizeNS"),
+        ("sizev", "SizeNS"),
+        ("ns", "SizeNS"),
+        ("ver", "SizeNS"),
+        ("sizewe", "SizeWE"),
+        ("sizeh", "SizeWE"),
+        ("we", "SizeWE"),
+        ("hor", "SizeWE"),
+        ("sizeall", "SizeAll"),
+        ("fleur", "SizeAll"),
+        ("move", "SizeAll"),
+        ("location", "Pin"),
+        ("loaction", "Pin"), // common misspelling seen in the wild
+        ("pin", "Pin"),
+        ("pointer", "Arrow"),
+        ("standard", "Arrow"),
+        ("classic", "Arrow"),
+        ("normal", "Arrow"),
+        ("default", "Arrow"),
+        ("arrow", "Arrow"),
+        ("select", "Hand"),
+    ];
+
+    /// Lowercase a stem and reduce every run of non-alphanumerics to a single
+    /// space, padded at both ends, so keywords can be matched as whole words.
+    ///
+    /// Whole-word matching is what keeps this safe: a plain substring search
+    /// would find "no" inside "normal" and "we" inside "Sweep".
+    fn normalize_stem(stem: &str) -> String {
+        let mut out = String::with_capacity(stem.len() + 2);
+        out.push(' ');
+        for c in stem.chars() {
+            if c.is_alphanumeric() {
+                out.extend(c.to_lowercase());
+            } else if !out.ends_with(' ') {
+                out.push(' ');
+            }
+        }
+        if !out.ends_with(' ') {
+            out.push(' ');
+        }
+        out
+    }
+
+    /// Find the role for a cursor file stem, plus the index of the keyword that
+    /// matched. A lower index means a more specific keyword, which
+    /// `get_assignments` uses to break ties when two files claim one role.
+    pub fn role_match(stem: &str) -> Option<(&'static str, usize)> {
+        let norm = normalize_stem(stem);
+        ROLE_KEYWORDS
+            .iter()
+            .enumerate()
+            .find(|(_, (keyword, _))| norm.contains(&format!(" {keyword} ")))
+            .map(|(rank, (_, role))| (*role, rank))
+    }
+
+    /// Path of the install-wide revert snapshot, migrating any leftover
+    /// per-pack `revert.json` on the way.
+    ///
+    /// Older builds kept one snapshot per pack and rewrote it on every apply,
+    /// so a pack applied twice ended up recording *itself* as the original. A
+    /// leftover file is therefore only trustworthy when nothing in it points
+    /// into the packs directory:
+    ///
+    /// - trustworthy, and no shared snapshot yet → promote it, so an install
+    ///   that applied a pack exactly once keeps its real cursors;
+    /// - points into a pack → delete it, since restoring it could only ever
+    ///   reinstate a pack;
+    /// - trustworthy but a shared snapshot already exists → leave it alone.
+    ///   Two plausible originals is not a reason to destroy one.
+    pub fn snapshot_path(packs_base: &Path) -> PathBuf {
+        let shared = packs_base.join("revert.json");
+
+        for entry in fs::read_dir(packs_base).into_iter().flatten().flatten() {
+            let legacy = entry.path().join("revert.json");
+            if !legacy.is_file() {
+                continue;
+            }
+
+            let salvageable = fs::read_to_string(&legacy)
+                .ok()
+                .and_then(|s| serde_json::from_str::<CursorSnapshot>(&s).ok())
+                .is_some_and(|snap| !snap.is_pack_owned(packs_base));
+
+            if salvageable {
+                if !shared.exists() {
+                    let _ = fs::rename(&legacy, &shared);
+                }
+            } else {
+                let _ = fs::remove_file(&legacy);
+            }
+        }
+
+        shared
     }
 
     /// Read the current registry state into a snapshot.
@@ -643,8 +797,12 @@ mod windows_cursor {
     /// matched (assigned) and unmatched files separately.
     pub fn get_assignments(source_dir: &Path) -> Result<super::PackAssignmentResult, String> {
         // 1. Auto-detect role for each cursor file.
+        //
+        // Values carry the matched keyword's rank so a later file can only
+        // displace an earlier one on merit; without it the winner would depend
+        // on `read_dir` order, which is not stable across machines.
         let mut all_files: Vec<String> = Vec::new();
-        let mut role_map: HashMap<String, String> = HashMap::new(); // role → file
+        let mut role_map: HashMap<String, (String, usize)> = HashMap::new(); // role → (file, rank)
 
         for entry in fs::read_dir(source_dir).map_err(|e| e.to_string())?.flatten() {
             let path = entry.path();
@@ -654,22 +812,36 @@ mod windows_cursor {
             if ext != "cur" && ext != "ani" { continue; }
             let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
-            if let Some(reg_name) = stem_to_reg(stem) {
-                role_map.insert(reg_name.to_string(), file.clone());
+            if let Some((reg_name, rank)) = role_match(stem) {
+                // Rank first, then animated over static (a pack shipping both
+                // means the .ani is the interesting one), then name order.
+                let is_static = ext == "cur";
+                let better = match role_map.get(reg_name) {
+                    None => true,
+                    Some((held, held_rank)) => {
+                        let held_static = held.to_ascii_lowercase().ends_with(".cur");
+                        (rank, is_static, file.as_str()) < (*held_rank, held_static, held.as_str())
+                    }
+                };
+                if better {
+                    role_map.insert(reg_name.to_string(), (file.clone(), rank));
+                }
             }
             all_files.push(file);
         }
 
         // 2. Apply per-pack overrides on top of auto-detection.
+        //
+        // One file may serve several roles — the registry allows it, and packs
+        // routinely reuse a single arrow for both Arrow and AppStarting — so an
+        // override claims its role without evicting the file's other roles.
         let overrides = super::load_overrides(source_dir);
         for (role, file_opt) in &overrides {
-            // Remove the overridden role and any assignment that used the same file.
             role_map.remove(role);
             match file_opt {
                 Some(file) => {
-                    role_map.retain(|_, f| f != file);
                     if source_dir.join(file).is_file() {
-                        role_map.insert(role.clone(), file.clone());
+                        role_map.insert(role.clone(), (file.clone(), 0));
                     }
                 }
                 None => {} // role explicitly cleared; already removed above
@@ -678,7 +850,7 @@ mod windows_cursor {
 
         // 3. Build result.
         let assigned: Vec<super::CursorAssignment> = role_map.into_iter()
-            .map(|(role, file)| super::CursorAssignment { role, file })
+            .map(|(role, (file, _rank))| super::CursorAssignment { role, file })
             .collect();
         let assigned_files: Vec<&str> = assigned.iter().map(|a| a.file.as_str()).collect();
         let unmatched: Vec<String> = all_files.into_iter()
@@ -980,11 +1152,8 @@ fn parse_ani(
     parse_ani_bytes(&data)
 }
 
-/// Copy the pack's cursor files to `%SystemRoot%\Cursors\<pack_id>\`, write the
-/// `HKCU\Control Panel\Cursors` registry values, and call `SPI_SETCURSORS`.
-///
-/// A snapshot of the pre-existing registry values is saved as `revert.json`
-/// beside `pack.json` so the change can later be undone with `revert_pack`.
+/// Report which cursor files map to which system roles, auto-detection and
+/// saved overrides combined, without touching the registry.
 #[tauri::command]
 fn get_pack_assignments(app: tauri::AppHandle, pack_id: String) -> Result<PackAssignmentResult, String> {
     #[cfg(target_os = "windows")]
@@ -1028,8 +1197,8 @@ fn set_cursor_override(
         // Explicitly clear the role.
         overrides.insert(role, None);
     } else {
-        // Remove any other override that already claims this file.
-        overrides.retain(|_, v| v.as_deref() != Some(file.as_str()));
+        // A file may back several roles at once, so claiming it here leaves any
+        // other role already pointing at it untouched.
         overrides.insert(role, Some(file));
     }
     save_overrides(&pack_dir, &overrides)?;
@@ -1053,10 +1222,24 @@ fn apply_pack(app: tauri::AppHandle, pack_id: String) -> Result<PackAssignmentRe
             return Err("Pack not found".into());
         }
 
-        // Snapshot the registry *before* touching anything.
-        let snapshot = windows_cursor::snapshot()?;
-        let snapshot_json = serde_json::to_string_pretty(&snapshot).map_err(|e| e.to_string())?;
-        fs::write(pack_dir.join("revert.json"), &snapshot_json).map_err(|e| e.to_string())?;
+        // Capture the user's own cursors once, on the first apply, and keep it
+        // for the lifetime of the install. Snapshotting on every apply meant a
+        // second apply recorded the *already applied* pack as the original, so
+        // reverting restored a pack instead of the user's real cursors.
+        let snapshot_path = windows_cursor::snapshot_path(&base);
+        if !snapshot_path.exists() {
+            let captured = windows_cursor::snapshot()?;
+            let snapshot = if captured.is_pack_owned(&base) {
+                // A pack is already live and the real defaults were never
+                // recorded, so there is nothing genuine left to save. Fall back
+                // to Windows' built-ins rather than enshrining a pack.
+                windows_cursor::CursorSnapshot::windows_default()
+            } else {
+                captured
+            };
+            let snapshot_json = serde_json::to_string_pretty(&snapshot).map_err(|e| e.to_string())?;
+            fs::write(&snapshot_path, &snapshot_json).map_err(|e| e.to_string())?;
+        }
 
         windows_cursor::apply(&pack_dir)
     }
@@ -1065,8 +1248,11 @@ fn apply_pack(app: tauri::AppHandle, pack_id: String) -> Result<PackAssignmentRe
     Err("apply_pack is only supported on Windows".into())
 }
 
-/// Restore the cursor registry to the snapshot saved by the last `apply_pack`
-/// call and broadcast `SPI_SETCURSORS` so the revert takes effect immediately.
+/// Restore the cursors the user had before any pack was applied and broadcast
+/// `SPI_SETCURSORS` so the revert takes effect immediately.
+///
+/// The snapshot is per-install, written once by the first `apply_pack`, so this
+/// always returns to the user's own cursors rather than to a previous pack.
 #[tauri::command]
 fn revert_pack(app: tauri::AppHandle, pack_id: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -1077,9 +1263,15 @@ fn revert_pack(app: tauri::AppHandle, pack_id: String) -> Result<(), String> {
             return Err("Invalid pack id".into());
         }
 
-        let revert_path = pack_dir.join("revert.json");
+        if !pack_dir.is_dir() {
+            return Err("Pack not found".into());
+        }
+
+        // One snapshot for the whole install, not one per pack: it records the
+        // cursors the user had before PawPack ever touched them.
+        let revert_path = windows_cursor::snapshot_path(&base);
         if !revert_path.exists() {
-            return Err("No revert snapshot found — apply this pack first".into());
+            return Err("No revert snapshot found — apply a pack first".into());
         }
 
         let json = fs::read_to_string(&revert_path).map_err(|e| e.to_string())?;
@@ -1293,6 +1485,117 @@ mod tests {
         assert_eq!(info.frames.len(), 1);
         assert_eq!(info.frames[0].frames[0].hotspot_x, 0);
     }
+
+    #[cfg(target_os = "windows")]
+    mod role_match {
+        use crate::windows_cursor::role_match;
+
+        fn role(stem: &str) -> Option<&'static str> {
+            role_match(stem).map(|(r, _)| r)
+        }
+
+        #[test]
+        fn plain_stems_keep_matching() {
+            assert_eq!(role("Arrow"), Some("Arrow"));
+            assert_eq!(role("Busy"), Some("Wait"));
+            assert_eq!(role("Diag 1"), Some("SizeNWSE"));
+            assert_eq!(role("Working in bg"), Some("AppStarting"));
+            assert_eq!(role("Loaction"), Some("Pin"));
+        }
+
+        #[test]
+        fn decorated_names_now_match() {
+            assert_eq!(role("Brushbuddy-standard-cursor-static"), Some("Arrow"));
+            assert_eq!(role("Animated Loading Brushbuddy"), Some("Wait"));
+            assert_eq!(role("Animated Classic cursor Brushbuddy"), Some("Arrow"));
+        }
+
+        #[test]
+        fn specific_keyword_beats_generic_one() {
+            // Contains both "link" (Hand) and "pointer" (Arrow).
+            assert_eq!(role("Brushbuddy-link-pointer-static"), Some("Hand"));
+            assert_eq!(role("Animated Link pointer Brushbuddy"), Some("Hand"));
+            // Windows' own names qualify a trailing "Select".
+            assert_eq!(role("Normal Select"), Some("Arrow"));
+            assert_eq!(role("Help Select"), Some("Help"));
+            assert_eq!(role("Precision Select"), Some("Crosshair"));
+            assert_eq!(role("Alternate Select"), Some("UpArrow"));
+            assert_eq!(role("Link Select"), Some("Hand"));
+        }
+
+        #[test]
+        fn matches_whole_words_only() {
+            // "normal" contains "no", "sweep" contains "we" — neither may match
+            // the short role keyword hiding inside them.
+            assert_eq!(role("Normal"), Some("Arrow"));
+            assert_eq!(role("Sweep"), None);
+            assert_eq!(role("Crosshair"), Some("Crosshair"));
+            assert_eq!(role("Uparrow"), Some("UpArrow"));
+        }
+
+        #[test]
+        fn unrelated_names_stay_unmatched() {
+            assert_eq!(role("Rocky_Idle"), None);
+            assert_eq!(role("Tau Ceti"), None);
+            assert_eq!(role("Capsule_Open"), None);
+        }
+
+        #[test]
+        fn legacy_snapshot_migration() {
+            use crate::windows_cursor::snapshot_path;
+            use std::fs;
+
+            let base = std::env::temp_dir().join(format!(
+                "pawpack-migrate-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let genuine = base.join("pack-a");
+            let poisoned = base.join("pack-b");
+            fs::create_dir_all(&genuine).unwrap();
+            fs::create_dir_all(&poisoned).unwrap();
+
+            // Points at a real Windows cursor — worth keeping.
+            fs::write(
+                genuine.join("revert.json"),
+                r#"{"values":{"Arrow":"C:\\Windows\\Cursors\\aero_arrow.cur"},"scheme":"Windows Default"}"#,
+            )
+            .unwrap();
+            // Points back into the packs directory — restoring it would only
+            // reinstate a pack, so it must not survive.
+            let inside = poisoned.join("Arrow.cur").to_string_lossy().replace('\\', "\\\\");
+            fs::write(
+                poisoned.join("revert.json"),
+                format!(r#"{{"values":{{"Arrow":"{inside}"}},"scheme":"Bog"}}"#),
+            )
+            .unwrap();
+
+            let shared = snapshot_path(&base);
+
+            assert_eq!(shared, base.join("revert.json"));
+            assert!(shared.is_file(), "genuine snapshot should be promoted");
+            assert!(
+                fs::read_to_string(&shared).unwrap().contains("aero_arrow.cur"),
+                "promoted snapshot should be the genuine one"
+            );
+            assert!(!genuine.join("revert.json").exists(), "promoted file should move, not copy");
+            assert!(!poisoned.join("revert.json").exists(), "pack-owned snapshot should be deleted");
+
+            // Running again is a no-op and must not clobber the shared file.
+            let before = fs::read_to_string(&shared).unwrap();
+            snapshot_path(&base);
+            assert_eq!(fs::read_to_string(&shared).unwrap(), before);
+
+            fs::remove_dir_all(&base).ok();
+        }
+
+        #[test]
+        fn rank_orders_specific_above_generic() {
+            let (_, link) = role_match("Link pointer").unwrap();
+            let (_, plain) = role_match("Pointer").unwrap();
+            assert!(link < plain, "specific keyword must outrank generic one");
+        }
+    }
 }
-
-
