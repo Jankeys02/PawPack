@@ -706,7 +706,6 @@ fn center_on_canvas(
 
 fn cursor_path_to_b64(path: &Path) -> Result<String, String> {
     use base64::{engine::general_purpose::STANDARD, Engine};
-    use image::{DynamicImage, ImageBuffer, Rgba};
 
     let data = fs::read(path).map_err(|e| e.to_string())?;
     let ext = path
@@ -715,13 +714,40 @@ fn cursor_path_to_b64(path: &Path) -> Result<String, String> {
         .map(|e| e.to_ascii_lowercase())
         .unwrap_or_default();
 
-    let (width, height, rgba) = if ext == "ani" {
+    if ext == "ani" {
         let ani = parse_ani_bytes(&data)?;
-        let first = ani.frames.into_iter().next().ok_or("ANI has no frames")?;
-        best_frame(first)?
-    } else {
-        best_frame(parse_cur_bytes(&data)?)?
-    };
+
+        // Drop frames with no image variants rather than failing the cursor.
+        let frames: Vec<(u32, u32, Vec<u8>)> = ani
+            .frames
+            .into_iter()
+            .filter_map(|f| best_frame(f).ok())
+            .collect();
+
+        if frames.is_empty() {
+            return Err("ANI has no frames".into());
+        }
+
+        if frames.len() > 1 {
+            let delays: Vec<u32> = if ani.per_frame_rates.is_empty() {
+                vec![ani.display_rate; frames.len()]
+            } else {
+                ani.per_frame_rates
+            };
+            return Ok(STANDARD.encode(encode_animated_png(&frames, &delays)?));
+        }
+
+        let (width, height, rgba) = frames.into_iter().next().unwrap();
+        return Ok(STANDARD.encode(still_png(width, height, rgba)?));
+    }
+
+    let (width, height, rgba) = best_frame(parse_cur_bytes(&data)?)?;
+    Ok(STANDARD.encode(still_png(width, height, rgba)?))
+}
+
+/// Encode one RGBA frame as a plain PNG.
+fn still_png(width: u32, height: u32, rgba: Vec<u8>) -> Result<Vec<u8>, String> {
+    use image::{DynamicImage, ImageBuffer, Rgba};
 
     let img = DynamicImage::ImageRgba8(
         ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(width, height, rgba)
@@ -732,7 +758,7 @@ fn cursor_path_to_b64(path: &Path) -> Result<String, String> {
     img.write_to(&mut buf, image::ImageFormat::Png)
         .map_err(|e| e.to_string())?;
 
-    Ok(STANDARD.encode(buf.into_inner()))
+    Ok(buf.into_inner())
 }
 
 // ── Windows cursor apply/revert ───────────────────────────────────────────────
@@ -1676,6 +1702,43 @@ mod tests {
         buf
     }
 
+    /// A RIFF ACON blob with `n` identical 1x1 frames and a display rate of 4.
+    fn make_ani(n: u32) -> Vec<u8> {
+        let cur_data = make_cur(0, 0);
+        let cur_size = cur_data.len() as u32;
+
+        let mut list_content = Vec::new();
+        list_content.extend_from_slice(b"fram");
+        for _ in 0..n {
+            list_content.extend_from_slice(b"icon");
+            list_content.extend_from_slice(&cur_size.to_le_bytes());
+            list_content.extend_from_slice(&cur_data);
+            if cur_size % 2 == 1 {
+                list_content.push(0);
+            }
+        }
+
+        let mut anih_data = vec![0u8; 36];
+        anih_data[0..4].copy_from_slice(&36u32.to_le_bytes());
+        anih_data[4..8].copy_from_slice(&n.to_le_bytes()); // nFrames
+        anih_data[28..32].copy_from_slice(&4u32.to_le_bytes()); // iDispRate
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"RIFF");
+        buf.extend_from_slice(&[0u8; 4]); // size placeholder
+        buf.extend_from_slice(b"ACON");
+        buf.extend_from_slice(b"anih");
+        buf.extend_from_slice(&36u32.to_le_bytes());
+        buf.extend_from_slice(&anih_data);
+        buf.extend_from_slice(b"LIST");
+        buf.extend_from_slice(&(list_content.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&list_content);
+
+        let riff_size = (buf.len() - 8) as u32;
+        buf[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        buf
+    }
+
     #[test]
     fn cur_hotspot_round_trip() {
         let data = make_cur(7, 12);
@@ -2148,6 +2211,70 @@ mod tests {
         #[test]
         fn rejects_an_empty_frame_list() {
             assert!(encode_animated_png(&[], &[]).is_err());
+        }
+
+        use crate::cursor_path_to_b64;
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        use std::fs;
+        use std::path::PathBuf;
+
+        /// A unique temp directory for one test.
+        fn scratch_dir(tag: &str) -> PathBuf {
+            let dir = std::env::temp_dir().join(format!(
+                "pawpack-apng-{tag}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+
+        /// Decode what the command hands the frontend, so assertions run
+        /// against the same bytes the browser would.
+        fn decoded(path: &std::path::Path) -> Vec<u8> {
+            STANDARD.decode(cursor_path_to_b64(path).unwrap()).unwrap()
+        }
+
+        #[test]
+        fn a_cur_file_stays_a_still_png() {
+            let dir = scratch_dir("cur");
+            let path = dir.join("Arrow.cur");
+            fs::write(&path, super::make_cur(0, 0)).unwrap();
+
+            let out = decoded(&path);
+            assert_eq!(&out[..8], b"\x89PNG\r\n\x1a\n");
+            assert!(actl(&out).is_none(), "a .cur must not animate");
+
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_single_frame_ani_stays_a_still_png() {
+            let dir = scratch_dir("one");
+            let path = dir.join("Busy.ani");
+            fs::write(&path, super::make_ani(1)).unwrap();
+
+            let out = decoded(&path);
+            assert!(actl(&out).is_none(), "one frame is not an animation");
+
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_multi_frame_ani_animates() {
+            let dir = scratch_dir("many");
+            let path = dir.join("Busy.ani");
+            fs::write(&path, super::make_ani(3)).unwrap();
+
+            let out = decoded(&path);
+            assert_eq!(actl(&out).unwrap(), (3, 0), "3 frames, looping forever");
+            // make_ani writes no rate chunk, so every frame takes the anih
+            // display rate of 4 jiffies.
+            assert_eq!(fctl_delays(&out), vec![(4, 60), (4, 60), (4, 60)]);
+
+            fs::remove_dir_all(&dir).ok();
         }
     }
 }
