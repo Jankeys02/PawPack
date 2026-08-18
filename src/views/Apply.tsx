@@ -47,7 +47,6 @@ type CardStatus =
   | { kind: "idle" }
   | { kind: "applying" }
   | { kind: "reverting" }
-  | { kind: "reverted" }
   | { kind: "error"; message: string };
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
@@ -244,7 +243,7 @@ function PackRow({
     setStatus({ kind: "reverting" });
     try {
       await invoke("revert_pack", { packId: pack.id });
-      setStatus({ kind: "reverted" });
+      setStatus({ kind: "idle" });
       onReverted();
     } catch (e) {
       setStatus({ kind: "error", message: String(e) });
@@ -257,7 +256,6 @@ function PackRow({
     <div className={cn(
       "flex flex-col gap-3 rounded-sm border bg-zinc-900 p-4 transition-colors",
       isActive ? "border-amber-500/40 bg-amber-500/5" :
-      status.kind === "reverted" ? "border-zinc-700" :
       status.kind === "error" ? "border-red-500/30" :
       "border-zinc-800",
     )}>
@@ -291,7 +289,7 @@ function PackRow({
           <button
             onClick={handleRevert}
             disabled={busy}
-            title="Restore cursor state from before this pack was applied"
+            title="Restore your original cursors"
             className="flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-300 disabled:pointer-events-none disabled:opacity-40"
           >
             {status.kind === "reverting" ? (
@@ -333,12 +331,6 @@ function PackRow({
           <CheckCircle2 className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
           Applied — {appliedResult.assigned.length} cursor role{appliedResult.assigned.length !== 1 ? "s" : ""} written.
           Cursors updated immediately.
-        </div>
-      )}
-      {status.kind === "reverted" && (
-        <div className="flex items-center gap-2 rounded border border-zinc-700 bg-zinc-800/60 px-3 py-2 text-xs text-zinc-400">
-          <CheckCircle2 className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
-          Reverted to the state before this pack was applied.
         </div>
       )}
       {status.kind === "error" && (
@@ -398,6 +390,8 @@ export default function Apply({
   const [appliedResult, setAppliedResult] = useState<
     { packId: string; result: PackAssignmentResult } | null
   >(null);
+  /** Whether the last thing that happened was a revert — one shared fact, not per-card. */
+  const [justReverted, setJustReverted] = useState(false);
 
   const loadPacks = useCallback(async () => {
     setLoading(true);
@@ -431,9 +425,11 @@ export default function Apply({
             </p>
           ) : !loading && (
             <p className="text-xs text-zinc-600">
-              {packs.length === 0
-                ? "No packs available"
-                : `${packs.length} pack${packs.length === 1 ? "" : "s"} — select one to apply system-wide`}
+              {justReverted
+                ? "Restored your original cursors."
+                : packs.length === 0
+                  ? "No packs available"
+                  : `${packs.length} pack${packs.length === 1 ? "" : "s"} — select one to apply system-wide`}
             </p>
           )}
         </div>
@@ -484,10 +480,12 @@ export default function Apply({
                 appliedResult={appliedResult?.packId === pack.id ? appliedResult.result : null}
                 onApplied={(result) => {
                   setAppliedResult({ packId: pack.id, result });
+                  setJustReverted(false);
                   onApplied({ kind: "pack", id: pack.id, name: pack.name });
                 }}
                 onReverted={() => {
                   setAppliedResult(null);
+                  setJustReverted(true);
                   onReverted();
                 }}
               />
