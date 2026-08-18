@@ -2876,6 +2876,7 @@ dependencies = [
  "base64 0.23.1",
  "ico",
  "image",
+ "png 0.18.1",
  "riff",
  "serde",
  "serde_json",

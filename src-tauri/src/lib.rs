@@ -609,6 +609,101 @@ fn find_first_cursor(pack_dir: &Path) -> Result<PathBuf, String> {
     first_ani.ok_or_else(|| "No cursor files found in pack".to_string())
 }
 
+/// Encode RGBA frames as a looping APNG.
+///
+/// Frames are centred on a canvas sized to the largest width and the largest
+/// height present, each taken independently, and padded with transparency.
+/// Padding rather than scaling: these are pixel-art cursors and scaling blurs
+/// them.
+///
+/// `delays_jiffies` holds one delay per frame in jiffies (1/60 s), the unit
+/// `.ani` files use. When it is shorter than `frames`, the last value repeats.
+///
+/// ponytail: frames encode in file order. `.ani` also allows a `seq` chunk
+/// that reorders playback; `parse_ani_bytes` does not read it, so a pack using
+/// `seq` animates in the wrong order. Parse `seq` in `parse_ani_bytes` and
+/// reorder here if that ever shows up.
+fn encode_animated_png(
+    frames: &[(u32, u32, Vec<u8>)],
+    delays_jiffies: &[u32],
+) -> Result<Vec<u8>, String> {
+    if frames.is_empty() {
+        return Err("ANI has no frames".into());
+    }
+
+    let canvas_w = frames.iter().map(|(w, _, _)| *w).max().unwrap_or(0);
+    let canvas_h = frames.iter().map(|(_, h, _)| *h).max().unwrap_or(0);
+    if canvas_w == 0 || canvas_h == 0 {
+        return Err("ANI frames have zero size".into());
+    }
+
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut buf, canvas_w, canvas_h);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        // The frame count must match the number of frames written below, or
+        // the APNG is malformed. 0 plays means loop forever.
+        encoder
+            .set_animated(frames.len() as u32, 0)
+            .map_err(|e| e.to_string())?;
+
+        let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+
+        for (i, (w, h, rgba)) in frames.iter().enumerate() {
+            let jiffies = delays_jiffies
+                .get(i)
+                .or_else(|| delays_jiffies.last())
+                .copied()
+                .unwrap_or(1)
+                .max(1);
+            let delay = u16::try_from(jiffies).unwrap_or(u16::MAX);
+            writer
+                .set_frame_delay(delay, 60)
+                .map_err(|e| e.to_string())?;
+            writer
+                .write_image_data(&center_on_canvas(*w, *h, rgba, canvas_w, canvas_h))
+                .map_err(|e| e.to_string())?;
+        }
+
+        writer.finish().map_err(|e| e.to_string())?;
+    }
+
+    Ok(buf)
+}
+
+/// Copy one RGBA frame into the middle of a transparent canvas.
+fn center_on_canvas(
+    w: u32,
+    h: u32,
+    rgba: &[u8],
+    canvas_w: u32,
+    canvas_h: u32,
+) -> Vec<u8> {
+    if w == canvas_w && h == canvas_h {
+        return rgba.to_vec();
+    }
+
+    let mut out = vec![0u8; (canvas_w * canvas_h * 4) as usize];
+    let off_x = (canvas_w.saturating_sub(w) / 2) as usize;
+    let off_y = (canvas_h.saturating_sub(h) / 2) as usize;
+    let row_bytes = (w * 4) as usize;
+
+    for y in 0..h as usize {
+        let src = y * row_bytes;
+        if src + row_bytes > rgba.len() {
+            break;
+        }
+        let dst = ((y + off_y) * canvas_w as usize + off_x) * 4;
+        if dst + row_bytes > out.len() {
+            break;
+        }
+        out[dst..dst + row_bytes].copy_from_slice(&rgba[src..src + row_bytes]);
+    }
+
+    out
+}
+
 fn cursor_path_to_b64(path: &Path) -> Result<String, String> {
     use base64::{engine::general_purpose::STANDARD, Engine};
     use image::{DynamicImage, ImageBuffer, Rgba};
@@ -1956,6 +2051,103 @@ mod tests {
             assert_eq!(cleared.len(), 16);
 
             fs::remove_dir_all(&base).ok();
+        }
+    }
+
+    mod apng {
+        use crate::encode_animated_png;
+
+        /// Index of a chunk's data, given its four-byte type.
+        /// PNG chunk layout: [len: 4][type: 4][data: len][crc: 4].
+        fn chunk_data(bytes: &[u8], kind: &[u8; 4]) -> Option<usize> {
+            bytes.windows(4).position(|w| w == kind).map(|i| i + 4)
+        }
+
+        /// (frame_count, play_count) from the acTL chunk.
+        fn actl(bytes: &[u8]) -> Option<(u32, u32)> {
+            let d = chunk_data(bytes, b"acTL")?;
+            let frames = u32::from_be_bytes(bytes[d..d + 4].try_into().ok()?);
+            let plays = u32::from_be_bytes(bytes[d + 4..d + 8].try_into().ok()?);
+            Some((frames, plays))
+        }
+
+        /// Every fcTL chunk's (delay_num, delay_den). fcTL data layout:
+        /// seq(4) width(4) height(4) x(4) y(4) delay_num(2) delay_den(2) ...
+        fn fctl_delays(bytes: &[u8]) -> Vec<(u16, u16)> {
+            let mut out = Vec::new();
+            for (i, w) in bytes.windows(4).enumerate() {
+                if w == b"fcTL" {
+                    let d = i + 4;
+                    if bytes.len() >= d + 24 {
+                        let num = u16::from_be_bytes([bytes[d + 20], bytes[d + 21]]);
+                        let den = u16::from_be_bytes([bytes[d + 22], bytes[d + 23]]);
+                        out.push((num, den));
+                    }
+                }
+            }
+            out
+        }
+
+        /// `n` solid frames of `w`x`h`, so tests need no real cursor data.
+        fn frames(n: usize, w: u32, h: u32) -> Vec<(u32, u32, Vec<u8>)> {
+            (0..n)
+                .map(|i| (w, h, vec![(i * 10) as u8; (w * h * 4) as usize]))
+                .collect()
+        }
+
+        #[test]
+        fn writes_a_valid_png_signature_and_actl() {
+            let out = encode_animated_png(&frames(3, 4, 4), &[5, 5, 5]).unwrap();
+            assert_eq!(&out[..8], b"\x89PNG\r\n\x1a\n", "must still be a PNG");
+            assert!(actl(&out).is_some(), "animated output must carry acTL");
+        }
+
+        #[test]
+        fn actl_reports_frame_count_and_infinite_looping() {
+            let out = encode_animated_png(&frames(3, 4, 4), &[5, 5, 5]).unwrap();
+            assert_eq!(actl(&out).unwrap(), (3, 0), "3 frames, 0 = loop forever");
+        }
+
+        #[test]
+        fn per_frame_delays_reach_the_encoded_output() {
+            let out = encode_animated_png(&frames(3, 4, 4), &[3, 6, 9]).unwrap();
+            assert_eq!(fctl_delays(&out), vec![(3, 60), (6, 60), (9, 60)]);
+        }
+
+        #[test]
+        fn zero_delay_becomes_one_jiffy() {
+            // A zero delay lets the viewer pick its own minimum, which makes
+            // playback speed inconsistent between browsers.
+            let out = encode_animated_png(&frames(2, 4, 4), &[0, 4]).unwrap();
+            assert_eq!(fctl_delays(&out), vec![(1, 60), (4, 60)]);
+        }
+
+        #[test]
+        fn canvas_is_the_max_of_each_dimension_independently() {
+            // 32x16 beside 16x32 must give a 32x32 canvas.
+            let mixed = vec![
+                (32, 16, vec![0u8; 32 * 16 * 4]),
+                (16, 32, vec![0u8; 16 * 32 * 4]),
+            ];
+            let out = encode_animated_png(&mixed, &[4, 4]).unwrap();
+            // IHDR data starts right after the type: width(4) height(4).
+            let d = chunk_data(&out, b"IHDR").unwrap();
+            let width = u32::from_be_bytes(out[d..d + 4].try_into().unwrap());
+            let height = u32::from_be_bytes(out[d + 4..d + 8].try_into().unwrap());
+            assert_eq!((width, height), (32, 32));
+        }
+
+        #[test]
+        fn shorter_delay_list_falls_back_to_the_last_delay() {
+            // per_frame_rates can be shorter than the frame list; every frame
+            // still needs a delay.
+            let out = encode_animated_png(&frames(3, 4, 4), &[7]).unwrap();
+            assert_eq!(fctl_delays(&out), vec![(7, 60), (7, 60), (7, 60)]);
+        }
+
+        #[test]
+        fn rejects_an_empty_frame_list() {
+            assert!(encode_animated_png(&[], &[]).is_err());
         }
     }
 }
