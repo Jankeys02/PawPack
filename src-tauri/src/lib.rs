@@ -1189,7 +1189,7 @@ mod windows_cursor {
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-fn get_cursor_thumbnail(
+async fn get_cursor_thumbnail(
     app: tauri::AppHandle,
     pack_id: String,
     cursor_name: String,
@@ -1212,7 +1212,7 @@ fn get_cursor_thumbnail(
 }
 
 #[tauri::command]
-fn get_pack_thumbnails(
+async fn get_pack_thumbnails(
     app: tauri::AppHandle,
     pack_id: String,
     limit: usize,
@@ -1322,7 +1322,7 @@ fn delete_pack(app: tauri::AppHandle, pack_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn list_pack_cursors(
+async fn list_pack_cursors(
     app: tauri::AppHandle,
     pack_id: String,
 ) -> Result<Vec<CursorEntry>, String> {
@@ -1369,7 +1369,7 @@ fn list_pack_cursors(
 }
 
 #[tauri::command]
-fn parse_cur(
+async fn parse_cur(
     app: tauri::AppHandle,
     pack_id: String,
     cursor_name: String,
@@ -1384,7 +1384,7 @@ fn parse_cur(
 }
 
 #[tauri::command]
-fn parse_ani(
+async fn parse_ani(
     app: tauri::AppHandle,
     pack_id: String,
     cursor_name: String,
