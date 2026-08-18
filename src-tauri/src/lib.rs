@@ -1320,15 +1320,17 @@ fn mix_paths_for_apply(
     packs_base: &Path,
 ) -> Result<(HashMap<String, PathBuf>, Vec<String>), String> {
     let mix = read_mix(packs_base);
-    if mix.roles.is_empty() {
+    let known: HashMap<String, PathBuf> = mix
+        .roles
+        .iter()
+        .filter(|e| windows_cursor::CURSOR_REG_NAMES.contains(&e.role.as_str()))
+        .map(|e| (e.role.clone(), packs_base.join(&e.pack).join(&e.file)))
+        .collect();
+    if known.is_empty() {
         return Err("Mix is empty — assign at least one cursor before applying".into());
     }
 
-    let paths: HashMap<String, PathBuf> = mix
-        .roles
-        .iter()
-        .map(|e| (e.role.clone(), packs_base.join(&e.pack).join(&e.file)))
-        .collect();
+    let paths = known;
 
     let cleared: Vec<String> = windows_cursor::CURSOR_REG_NAMES
         .iter()
@@ -1936,6 +1938,27 @@ mod tests {
             assert_eq!(paths.get("Arrow").unwrap(), &base.join("pack-a").join("Arrow.cur"));
             assert_eq!(paths.get("Hand").unwrap(), &base.join("pack-b").join("Hand.cur"));
             assert_eq!(cleared.len(), 15);
+
+            fs::remove_dir_all(&base).ok();
+        }
+
+        #[test]
+        #[cfg(target_os = "windows")]
+        fn unknown_roles_are_refused_not_applied_as_deletions() {
+            let base = scratch("unknown");
+            write_mix_role(&base, "NotARealRole", "pack-a", "Arrow.cur").unwrap();
+
+            assert!(
+                crate::mix_paths_for_apply(&base).is_err(),
+                "a mix of only unknown roles must be refused, not applied as 17 deletions"
+            );
+
+            // A known role alongside an unknown one applies only the known one.
+            write_mix_role(&base, "Arrow", "pack-a", "Arrow.cur").unwrap();
+            let (paths, cleared) = crate::mix_paths_for_apply(&base).unwrap();
+            assert_eq!(paths.len(), 1, "unknown role must not reach the registry write");
+            assert!(paths.contains_key("Arrow"));
+            assert_eq!(cleared.len(), 16);
 
             fs::remove_dir_all(&base).ok();
         }
