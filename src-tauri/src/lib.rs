@@ -574,7 +574,7 @@ mod windows_cursor {
     };
 
     /// All `HKCU\Control Panel\Cursors` value names we snapshot and restore.
-    const CURSOR_REG_NAMES: &[&str] = &[
+    pub const CURSOR_REG_NAMES: &[&str] = &[
         "Arrow", "Help", "AppStarting", "Wait", "Crosshair", "IBeam",
         "NWPen", "No", "SizeNS", "SizeWE", "SizeNWSE", "SizeNESW",
         "SizeAll", "UpArrow", "Hand", "Pin", "Person",
@@ -860,36 +860,51 @@ mod windows_cursor {
         Ok(super::PackAssignmentResult { assigned, unmatched })
     }
 
+    /// Point each named role at an absolute cursor path and broadcast the
+    /// change. Any role in `CURSOR_REG_NAMES` absent from `paths` has its
+    /// value deleted so Windows falls back to its built-in cursor.
+    ///
+    /// This is the only function that writes `HKCU\Control Panel\Cursors`.
+    /// Both applying a pack and applying a mix route through it, so the two
+    /// cannot drift apart in how they treat unfilled roles.
+    pub fn write_roles(paths: &HashMap<&str, PathBuf>) -> Result<(), String> {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let reg_key = hkcu
+            .open_subkey_with_flags("Control Panel\\Cursors", KEY_SET_VALUE)
+            .map_err(|e| format!("Cannot open cursor registry key for writing: {e}"))?;
+
+        for &reg_name in CURSOR_REG_NAMES {
+            match paths.get(reg_name) {
+                Some(path) => {
+                    let path_str = path.to_string_lossy().into_owned();
+                    reg_key
+                        .set_value(reg_name, &path_str)
+                        .map_err(|e| format!("Cannot set registry value {reg_name}: {e}"))?;
+                }
+                None => {
+                    let _ = reg_key.delete_value(reg_name);
+                }
+            }
+        }
+
+        call_spi_set_cursors()
+    }
+
     /// Write `HKCU\Control Panel\Cursors` registry values pointing directly at
     /// the cursor files in `source_dir` (the app's own packs directory — no
     /// copy to %SystemRoot% needed, no elevation required).
     ///
     /// Returns matched and unmatched files.
     pub fn apply(source_dir: &Path) -> Result<super::PackAssignmentResult, String> {
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let reg_key = hkcu
-            .open_subkey_with_flags("Control Panel\\Cursors", KEY_SET_VALUE)
-            .map_err(|e| format!("Cannot open cursor registry key for writing: {e}"))?;
-
         let result = get_assignments(source_dir)?;
 
-        let file_for_role: HashMap<&str, &str> = result.assigned.iter()
-            .map(|a| (a.role.as_str(), a.file.as_str()))
+        let paths: HashMap<&str, PathBuf> = result
+            .assigned
+            .iter()
+            .map(|a| (a.role.as_str(), source_dir.join(&a.file)))
             .collect();
 
-        for &reg_name in CURSOR_REG_NAMES {
-            if let Some(file) = file_for_role.get(reg_name) {
-                let path_str = source_dir.join(file).to_string_lossy().into_owned();
-                reg_key
-                    .set_value(reg_name, &path_str)
-                    .map_err(|e| format!("Cannot set registry value {reg_name}: {e}"))?;
-            } else {
-                // No file for this role — delete the value so Windows falls back to its default.
-                let _ = reg_key.delete_value(reg_name);
-            }
-        }
-
-        call_spi_set_cursors()?;
+        write_roles(&paths)?;
         Ok(result)
     }
 
