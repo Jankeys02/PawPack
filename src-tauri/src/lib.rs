@@ -1311,6 +1311,52 @@ fn set_cursor_override(
     Err("set_cursor_override is only supported on Windows".into())
 }
 
+/// Resolve the mix into absolute paths, plus the roles that will be cleared.
+///
+/// Errors on an empty mix rather than clearing all 17 roles, which is what a
+/// half-built mix would otherwise do the first time Apply is pressed.
+#[cfg(target_os = "windows")]
+fn mix_paths_for_apply(
+    packs_base: &Path,
+) -> Result<(HashMap<String, PathBuf>, Vec<String>), String> {
+    let mix = read_mix(packs_base);
+    if mix.roles.is_empty() {
+        return Err("Mix is empty — assign at least one cursor before applying".into());
+    }
+
+    let paths: HashMap<String, PathBuf> = mix
+        .roles
+        .iter()
+        .map(|e| (e.role.clone(), packs_base.join(&e.pack).join(&e.file)))
+        .collect();
+
+    let cleared: Vec<String> = windows_cursor::CURSOR_REG_NAMES
+        .iter()
+        .filter(|r| !paths.contains_key(**r))
+        .map(|r| r.to_string())
+        .collect();
+
+    Ok((paths, cleared))
+}
+
+/// Capture the user's own cursors once, before the first apply of any kind.
+#[cfg(target_os = "windows")]
+fn ensure_snapshot(base: &Path) -> Result<(), String> {
+    let snapshot_path = windows_cursor::snapshot_path(base);
+    if snapshot_path.exists() {
+        return Ok(());
+    }
+
+    let captured = windows_cursor::snapshot()?;
+    let snapshot = if captured.is_pack_owned(base) {
+        windows_cursor::CursorSnapshot::windows_default()
+    } else {
+        captured
+    };
+    let json = serde_json::to_string_pretty(&snapshot).map_err(|e| e.to_string())?;
+    fs::write(&snapshot_path, &json).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn apply_pack(app: tauri::AppHandle, pack_id: String) -> Result<PackAssignmentResult, String> {
     #[cfg(target_os = "windows")]
@@ -1328,26 +1374,75 @@ fn apply_pack(app: tauri::AppHandle, pack_id: String) -> Result<PackAssignmentRe
         // for the lifetime of the install. Snapshotting on every apply meant a
         // second apply recorded the *already applied* pack as the original, so
         // reverting restored a pack instead of the user's real cursors.
-        let snapshot_path = windows_cursor::snapshot_path(&base);
-        if !snapshot_path.exists() {
-            let captured = windows_cursor::snapshot()?;
-            let snapshot = if captured.is_pack_owned(&base) {
-                // A pack is already live and the real defaults were never
-                // recorded, so there is nothing genuine left to save. Fall back
-                // to Windows' built-ins rather than enshrining a pack.
-                windows_cursor::CursorSnapshot::windows_default()
-            } else {
-                captured
-            };
-            let snapshot_json = serde_json::to_string_pretty(&snapshot).map_err(|e| e.to_string())?;
-            fs::write(&snapshot_path, &snapshot_json).map_err(|e| e.to_string())?;
-        }
+        ensure_snapshot(&base)?;
 
         windows_cursor::apply(&pack_dir)
     }
 
     #[cfg(not(target_os = "windows"))]
     Err("apply_pack is only supported on Windows".into())
+}
+
+/// Report the current mix, splitting entries whose files are gone.
+#[tauri::command]
+fn get_mix(app: tauri::AppHandle) -> Result<MixResult, String> {
+    let base = packs_dir(&app)?;
+    Ok(read_mix(&base))
+}
+
+/// Set or clear one role in the mix. An empty `pack_id` clears it.
+#[tauri::command]
+fn set_mix_role(
+    app: tauri::AppHandle,
+    role: String,
+    pack_id: String,
+    file: String,
+) -> Result<MixResult, String> {
+    let base = packs_dir(&app)?;
+
+    if !pack_id.is_empty() {
+        let pack_dir = base.join(&pack_id);
+        if !pack_dir.starts_with(&base) {
+            return Err("Invalid pack id".into());
+        }
+        if !pack_dir.join(&file).is_file() {
+            return Err("Cursor file not found".into());
+        }
+    }
+
+    write_mix_role(&base, &role, &pack_id, &file)
+}
+
+/// Result of applying a mix.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ApplyMixResult {
+    pub written: usize,
+    /// Roles reset to Windows defaults because the mix does not fill them.
+    pub cleared: Vec<String>,
+}
+
+/// Write the mix to the registry, clearing every role it does not fill.
+#[tauri::command]
+fn apply_mix(app: tauri::AppHandle) -> Result<ApplyMixResult, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let base = packs_dir(&app)?;
+        let (paths, cleared) = mix_paths_for_apply(&base)?;
+
+        ensure_snapshot(&base)?;
+
+        let borrowed: HashMap<&str, PathBuf> =
+            paths.iter().map(|(r, p)| (r.as_str(), p.clone())).collect();
+        windows_cursor::write_roles(&borrowed)?;
+
+        Ok(ApplyMixResult { written: paths.len(), cleared })
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        Err("apply_mix is only supported on Windows".into())
+    }
 }
 
 /// Restore the cursors the user had before any pack was applied and broadcast
@@ -1406,7 +1501,10 @@ pub fn run() {
             get_pack_assignments,
             set_cursor_override,
             apply_pack,
-            revert_pack
+            revert_pack,
+            get_mix,
+            set_mix_role,
+            apply_mix
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1800,6 +1898,44 @@ mod tests {
             // And a write recovers the file rather than failing.
             write_mix_role(&base, "Hand", "pack-a", "Arrow.cur").unwrap();
             assert_eq!(read_mix(&base).roles.len(), 1);
+
+            fs::remove_dir_all(&base).ok();
+        }
+
+        #[test]
+        #[cfg(target_os = "windows")]
+        fn empty_mix_is_refused_before_any_write() {
+            let base = scratch("empty");
+            assert!(
+                crate::mix_paths_for_apply(&base).is_err(),
+                "an empty mix must be refused, not applied as 17 deletions"
+            );
+
+            write_mix_role(&base, "Arrow", "pack-a", "Arrow.cur").unwrap();
+            let (paths, cleared) = crate::mix_paths_for_apply(&base).unwrap();
+            assert_eq!(paths.len(), 1);
+            assert_eq!(paths.get("Arrow").unwrap(), &base.join("pack-a").join("Arrow.cur"));
+            assert_eq!(cleared.len(), 16, "the other 16 roles reset to Windows defaults");
+            assert!(!cleared.contains(&"Arrow".to_string()));
+
+            fs::remove_dir_all(&base).ok();
+        }
+
+        #[test]
+        #[cfg(target_os = "windows")]
+        fn mix_spanning_two_packs_resolves_both() {
+            let base = scratch("twopack");
+            fs::create_dir_all(base.join("pack-b")).unwrap();
+            fs::write(base.join("pack-b").join("Hand.cur"), b"not a real cursor").unwrap();
+
+            write_mix_role(&base, "Arrow", "pack-a", "Arrow.cur").unwrap();
+            write_mix_role(&base, "Hand", "pack-b", "Hand.cur").unwrap();
+
+            let (paths, cleared) = crate::mix_paths_for_apply(&base).unwrap();
+            assert_eq!(paths.len(), 2);
+            assert_eq!(paths.get("Arrow").unwrap(), &base.join("pack-a").join("Arrow.cur"));
+            assert_eq!(paths.get("Hand").unwrap(), &base.join("pack-b").join("Hand.cur"));
+            assert_eq!(cleared.len(), 15);
 
             fs::remove_dir_all(&base).ok();
         }
