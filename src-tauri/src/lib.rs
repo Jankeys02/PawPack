@@ -930,8 +930,10 @@ mod windows_cursor {
         RegKey,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        SystemParametersInfoW, SPI_GETCURSORSHADOW, SPI_SETCURSORS, SPI_SETCURSORSHADOW,
-        SPIF_SENDCHANGE, SPIF_UPDATEINIFILE,
+        SystemParametersInfoW, SPI_GETCURSORSHADOW, SPI_GETMOUSESONAR, SPI_GETMOUSEVANISH,
+        SPI_GETSNAPTODEFBUTTON, SPI_SETCURSORS, SPI_SETCURSORSHADOW, SPI_SETMOUSESONAR,
+        SPI_SETMOUSEVANISH, SPI_SETSNAPTODEFBUTTON, SPIF_SENDCHANGE, SPIF_UPDATEINIFILE,
+        SYSTEM_PARAMETERS_INFO_ACTION,
     };
 
     /// All `HKCU\Control Panel\Cursors` value names we snapshot and restore.
@@ -1316,39 +1318,91 @@ mod windows_cursor {
         Ok(())
     }
 
-    /// Whether Windows draws a drop shadow under the pointer — the "Enable
-    /// pointer shadow" box in Mouse Properties. System-wide, not per-pack.
-    pub fn get_shadow() -> Result<bool, String> {
+    /// The system pointer switches Settings exposes. Each is a plain on/off
+    /// that Windows already stores, so none of them need any state of ours.
+    ///
+    /// The final flag is the one that bites: the modern actions carry their
+    /// value *in* `pvParam`, while the older `SPI_SETSNAPTODEFBUTTON` carries
+    /// it in `uiParam`. Verified on Win11 — passing it the other way is
+    /// accepted and silently ignored, leaving the setting unchanged.
+    #[allow(clippy::type_complexity)]
+    const POINTER_FLAGS: &[(
+        &str,
+        SYSTEM_PARAMETERS_INFO_ACTION,
+        SYSTEM_PARAMETERS_INFO_ACTION,
+        bool,
+    )] = &[
+        ("shadow", SPI_GETCURSORSHADOW, SPI_SETCURSORSHADOW, false),
+        ("sonar", SPI_GETMOUSESONAR, SPI_SETMOUSESONAR, false),
+        ("vanish", SPI_GETMOUSEVANISH, SPI_SETMOUSEVANISH, false),
+        (
+            "snap_to_default",
+            SPI_GETSNAPTODEFBUTTON,
+            SPI_SETSNAPTODEFBUTTON,
+            true,
+        ),
+    ];
+
+    fn flag_entry(
+        name: &str,
+    ) -> Result<
+        (
+            SYSTEM_PARAMETERS_INFO_ACTION,
+            SYSTEM_PARAMETERS_INFO_ACTION,
+            bool,
+        ),
+        String,
+    > {
+        POINTER_FLAGS
+            .iter()
+            .find(|(n, ..)| *n == name)
+            .map(|(_, get, set, in_uiparam)| (*get, *set, *in_uiparam))
+            .ok_or_else(|| format!("Unknown pointer setting: {name}"))
+    }
+
+    /// Read one switch by name.
+    pub fn get_flag(name: &str) -> Result<bool, String> {
+        let (get, ..) = flag_entry(name)?;
         // SPI writes a 4-byte BOOL here.
         let mut enabled: i32 = 0;
         unsafe {
             SystemParametersInfoW(
-                SPI_GETCURSORSHADOW,
+                get,
                 0,
                 Some(&mut enabled as *mut _ as *mut core::ffi::c_void),
                 Default::default(),
             )
-            .map_err(|e| format!("Cannot read pointer shadow setting: {e}"))?;
+            .map_err(|e| format!("Cannot read {name}: {e}"))?;
         }
         Ok(enabled != 0)
     }
 
-    pub fn set_shadow(enabled: bool) -> Result<(), String> {
+    /// Every switch, for the Settings view's single round trip.
+    pub fn get_all_flags() -> HashMap<String, bool> {
+        POINTER_FLAGS
+            .iter()
+            .filter_map(|(name, ..)| get_flag(name).ok().map(|v| (name.to_string(), v)))
+            .collect()
+    }
+
+    pub fn set_flag(name: &str, enabled: bool) -> Result<(), String> {
+        let (_, set, in_uiparam) = flag_entry(name)?;
+        let (uiparam, pvparam) = if in_uiparam {
+            (enabled as u32, None)
+        } else {
+            (0, Some(enabled as usize as *mut core::ffi::c_void))
+        };
         unsafe {
-            // For the SET action the value travels *in* pvParam rather than
-            // behind it, so this is a cast and not a pointer to a BOOL.
-            //
-            // SPIF_UPDATEINIFILE is correct here (unlike SPI_SETCURSORS): this
-            // setting lives in HKCU\Control Panel\Desktop's
-            // UserPreferencesMask, and without the flag it is lost at logoff.
-            // Verified on Win11: flags 1, 2 and 3 all return TRUE for this action.
+            // SPIF_UPDATEINIFILE is correct here (unlike SPI_SETCURSORS): these
+            // live in HKCU\Control Panel\Desktop's UserPreferencesMask, and
+            // without the flag they are lost at logoff.
             SystemParametersInfoW(
-                SPI_SETCURSORSHADOW,
-                0,
-                Some(enabled as usize as *mut core::ffi::c_void),
+                set,
+                uiparam,
+                pvparam,
                 SPIF_UPDATEINIFILE | SPIF_SENDCHANGE,
             )
-            .map_err(|e| format!("Cannot set pointer shadow: {e}"))?;
+            .map_err(|e| format!("Cannot set {name}: {e}"))?;
         }
         Ok(())
     }
@@ -1635,28 +1689,28 @@ fn set_cursor_override(
     Err("set_cursor_override is only supported on Windows".into())
 }
 
-/// Read the system-wide "Enable pointer shadow" setting.
+/// Read every system pointer switch in one call.
 #[tauri::command]
-async fn get_cursor_shadow() -> Result<bool, String> {
+async fn get_pointer_flags() -> Result<HashMap<String, bool>, String> {
     #[cfg(target_os = "windows")]
-    return windows_cursor::get_shadow();
+    return Ok(windows_cursor::get_all_flags());
     #[cfg(not(target_os = "windows"))]
-    Err("get_cursor_shadow is only supported on Windows".into())
+    Err("get_pointer_flags is only supported on Windows".into())
 }
 
-/// Toggle the system-wide "Enable pointer shadow" setting.
+/// Toggle one system pointer switch, returning what Windows holds afterwards.
 #[tauri::command]
-async fn set_cursor_shadow(enabled: bool) -> Result<bool, String> {
+async fn set_pointer_flag(name: String, enabled: bool) -> Result<bool, String> {
     #[cfg(target_os = "windows")]
     {
-        windows_cursor::set_shadow(enabled)?;
-        // Report what Windows actually holds, not what we asked for.
-        return windows_cursor::get_shadow();
+        windows_cursor::set_flag(&name, enabled)?;
+        // Report the value Windows actually holds, not the one we asked for.
+        return windows_cursor::get_flag(&name);
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = enabled;
-        Err("set_cursor_shadow is only supported on Windows".into())
+        let _ = (name, enabled);
+        Err("set_pointer_flag is only supported on Windows".into())
     }
 }
 
@@ -1851,8 +1905,8 @@ pub fn run() {
             get_mix,
             set_mix_role,
             apply_mix,
-            get_cursor_shadow,
-            set_cursor_shadow
+            get_pointer_flags,
+            set_pointer_flag
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
