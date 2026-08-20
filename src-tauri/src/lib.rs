@@ -1915,6 +1915,28 @@ fn ensure_snapshot(base: &Path) -> Result<(), String> {
     fs::write(&snapshot_path, &json).map_err(|e| e.to_string())
 }
 
+/// Stop a running slideshow so it cannot overwrite what was just applied.
+///
+/// `force` is for revert, which always stops: restoring the user's cursors
+/// while a background task keeps re-applying them is broken in a way nobody
+/// wants. Apply respects the `stop_on_apply` setting instead.
+///
+/// Returns true when a running slideshow was actually stopped, so callers can
+/// report it rather than changing state silently.
+#[cfg(target_os = "windows")]
+fn stop_slideshow_for_apply(base: &Path, force: bool) -> bool {
+    let mut f = slideshow::load(base);
+    if !f.enabled || (!force && !f.stop_on_apply) {
+        return false;
+    }
+    if slideshow::delete_task().is_err() {
+        return false;
+    }
+    f.enabled = false;
+    let _ = slideshow::save(base, &f);
+    true
+}
+
 #[tauri::command]
 fn apply_pack(app: tauri::AppHandle, pack_id: String) -> Result<PackAssignmentResult, String> {
     #[cfg(target_os = "windows")]
@@ -1930,6 +1952,7 @@ fn apply_pack(app: tauri::AppHandle, pack_id: String) -> Result<PackAssignmentRe
         // second apply recorded the *already applied* pack as the original, so
         // reverting restored a pack instead of the user's real cursors.
         ensure_snapshot(&base)?;
+        stop_slideshow_for_apply(&base, false);
 
         windows_cursor::apply(&pack_dir)
     }
@@ -1987,6 +2010,7 @@ fn apply_mix(app: tauri::AppHandle) -> Result<ApplyMixResult, String> {
         let borrowed: HashMap<&str, PathBuf> =
             paths.iter().map(|(r, p)| (r.as_str(), p.clone())).collect();
         windows_cursor::write_roles(&borrowed)?;
+        stop_slideshow_for_apply(&base, false);
 
         Ok(ApplyMixResult { written: paths.len(), cleared })
     }
@@ -1996,6 +2020,152 @@ fn apply_mix(app: tauri::AppHandle) -> Result<ApplyMixResult, String> {
         let _ = app;
         Err("apply_mix is only supported on Windows".into())
     }
+}
+
+// ── Slideshow ─────────────────────────────────────────────────────────────────
+
+/// The slideshow as the UI sees it: playlists, plus entries whose files are
+/// gone, plus whether the scheduled task is actually registered right now.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SlideshowState {
+    pub enabled: bool,
+    pub interval_minutes: u32,
+    pub stop_on_apply: bool,
+    /// Read from Windows, not from our own file — the user may have deleted the
+    /// task in Task Scheduler behind our back.
+    pub task_registered: bool,
+    pub task_name: String,
+    pub roles: HashMap<String, Vec<slideshow::SlideRef>>,
+    pub stale: Vec<MixEntry>,
+}
+
+fn slideshow_state(base: &Path) -> SlideshowState {
+    let f = slideshow::load(base);
+    let mut stale = Vec::new();
+
+    for (role, list) in &f.roles {
+        for item in &list.items {
+            if !pack_file_in(base, &item.pack, &item.file).is_ok_and(|p| p.is_file()) {
+                stale.push(MixEntry {
+                    role: role.clone(),
+                    pack: item.pack.clone(),
+                    file: item.file.clone(),
+                });
+            }
+        }
+    }
+    stale.sort_by(|a, b| a.role.cmp(&b.role));
+
+    SlideshowState {
+        enabled: f.enabled,
+        interval_minutes: f.interval_minutes,
+        stop_on_apply: f.stop_on_apply,
+        task_registered: slideshow::task_exists(),
+        task_name: slideshow::TASK_NAME.to_string(),
+        roles: f.roles.into_iter().map(|(r, l)| (r, l.items)).collect(),
+        stale,
+    }
+}
+
+#[tauri::command]
+fn get_slideshow(app: tauri::AppHandle) -> Result<SlideshowState, String> {
+    let base = packs_dir(&app)?;
+    Ok(slideshow_state(&base))
+}
+
+/// Replace one role's playlist. An empty `items` removes the role entirely.
+#[tauri::command]
+fn set_slideshow_role(
+    app: tauri::AppHandle,
+    role: String,
+    items: Vec<slideshow::SlideRef>,
+) -> Result<SlideshowState, String> {
+    let base = packs_dir(&app)?;
+
+    // Validate every slide before storing it: these are persisted and later
+    // resolved into registry paths, so none may escape the packs directory.
+    for item in &items {
+        if !pack_file_in(&base, &item.pack, &item.file)?.is_file() {
+            return Err(format!("Cursor file not found: {}", item.file));
+        }
+    }
+
+    let mut f = slideshow::load(&base);
+    if items.is_empty() {
+        f.roles.remove(&role);
+    } else {
+        f.roles
+            .insert(role, slideshow::RolePlaylist { items, index: 0 });
+    }
+    slideshow::save(&base, &f)?;
+    Ok(slideshow_state(&base))
+}
+
+/// Start or stop the slideshow, and set its interval.
+#[tauri::command]
+fn set_slideshow(
+    app: tauri::AppHandle,
+    enabled: bool,
+    interval_minutes: u32,
+) -> Result<SlideshowState, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let base = packs_dir(&app)?;
+        let mut f = slideshow::load(&base);
+
+        // Task Scheduler cannot repeat faster than once a minute.
+        f.interval_minutes = interval_minutes.max(1);
+
+        if enabled {
+            if f.roles.values().all(|l| l.items.is_empty()) {
+                return Err(
+                    "Add at least one cursor to a role before starting the slideshow".into(),
+                );
+            }
+            // The first rotation is an apply like any other, so the user's own
+            // cursors must be captured before it lands.
+            ensure_snapshot(&base)?;
+            // Register first: leaving `enabled` true with no task would have the
+            // UI claim a rotation that is not actually scheduled.
+            slideshow::register_task(f.interval_minutes)?;
+        } else {
+            slideshow::delete_task()?;
+        }
+
+        f.enabled = enabled;
+        slideshow::save(&base, &f)?;
+        Ok(slideshow_state(&base))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, enabled, interval_minutes);
+        Err("The slideshow is only supported on Windows".into())
+    }
+}
+
+/// Whether applying a pack or a mix stops the slideshow.
+#[tauri::command]
+fn set_slideshow_stop_on_apply(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<SlideshowState, String> {
+    let base = packs_dir(&app)?;
+    let mut f = slideshow::load(&base);
+    f.stop_on_apply = enabled;
+    slideshow::save(&base, &f)?;
+    Ok(slideshow_state(&base))
+}
+
+/// Delete the scheduled task, keeping the saved playlists.
+#[tauri::command]
+fn remove_slideshow_task(app: tauri::AppHandle) -> Result<SlideshowState, String> {
+    let base = packs_dir(&app)?;
+    slideshow::delete_task()?;
+    let mut f = slideshow::load(&base);
+    f.enabled = false;
+    slideshow::save(&base, &f)?;
+    Ok(slideshow_state(&base))
 }
 
 /// Restore the cursors the user had before any pack was applied and broadcast
@@ -2019,6 +2189,10 @@ fn revert_cursors(app: tauri::AppHandle) -> Result<(), String> {
         let json = fs::read_to_string(&revert_path).map_err(|e| e.to_string())?;
         let snapshot: windows_cursor::CursorSnapshot =
             serde_json::from_str(&json).map_err(|e| e.to_string())?;
+
+        // Always, regardless of `stop_on_apply`: reverting while a background
+        // task keeps re-applying cursors is broken in a way nobody wants.
+        stop_slideshow_for_apply(&base, true);
 
         windows_cursor::revert(&snapshot)
     }
@@ -2065,6 +2239,11 @@ pub fn run() {
             get_mix,
             set_mix_role,
             apply_mix,
+            get_slideshow,
+            set_slideshow_role,
+            set_slideshow,
+            set_slideshow_stop_on_apply,
+            remove_slideshow_task,
             get_pointer_flags,
             set_pointer_flag
         ])
