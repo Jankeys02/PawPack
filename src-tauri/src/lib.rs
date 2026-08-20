@@ -1020,7 +1020,7 @@ fn still_png(width: u32, height: u32, rgba: Vec<u8>) -> Result<Vec<u8>, String> 
 // cross-platform dead-code noise that appears before the crate is first built.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 #[cfg(target_os = "windows")]
-mod windows_cursor {
+pub(crate) mod windows_cursor {
     use std::collections::HashMap;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -2034,6 +2034,17 @@ fn revert_cursors(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Fired by the "PawPack Slideshow" scheduled task. Rotate and exit without
+    // ever building a window or an event loop — this must stay before
+    // `tauri::Builder`, or every tick would flash the UI.
+    #[cfg(target_os = "windows")]
+    if std::env::args().any(|a| a == "--rotate") {
+        if let Ok(base) = slideshow::packs_base_from_env() {
+            let _ = slideshow::rotate_once(&base);
+        }
+        return;
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())

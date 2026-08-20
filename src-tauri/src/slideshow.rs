@@ -114,6 +114,153 @@ pub fn advance(packs_base: &Path, f: &mut SlideshowFile) -> HashMap<String, Path
     out
 }
 
+/// Advance every playlist and write the result to the registry.
+///
+/// Slideshow roles are layered *over* the mix so roles the slideshow does not
+/// own keep their mix assignment instead of being reset to a Windows default.
+/// This is the function the scheduled task calls.
+#[cfg(target_os = "windows")]
+pub fn rotate_once(packs_base: &Path) -> Result<(), String> {
+    let mut f = load(packs_base);
+    if !f.enabled {
+        return Ok(());
+    }
+
+    let picked = advance(packs_base, &mut f);
+    if picked.is_empty() {
+        // Nothing usable to show. Leave the registry untouched rather than
+        // clearing every role, which is what an empty map would otherwise do.
+        return Ok(());
+    }
+
+    let mut paths: HashMap<String, PathBuf> = crate::read_mix(packs_base)
+        .roles
+        .iter()
+        .filter_map(|e| {
+            pack_file_in(packs_base, &e.pack, &e.file)
+                .ok()
+                .map(|p| (e.role.clone(), p))
+        })
+        .collect();
+    paths.extend(picked);
+
+    let borrowed: HashMap<&str, PathBuf> = paths
+        .iter()
+        .filter(|(r, _)| crate::windows_cursor::CURSOR_REG_NAMES.contains(&r.as_str()))
+        .map(|(r, p)| (r.as_str(), p.clone()))
+        .collect();
+
+    crate::windows_cursor::write_roles(&borrowed)?;
+    save(packs_base, &f)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn rotate_once(_packs_base: &Path) -> Result<(), String> {
+    Err("rotate_once is only supported on Windows".into())
+}
+
+// ── Scheduled task ────────────────────────────────────────────────────────────
+
+/// Name of the Windows scheduled task. Surfaced in the UI so the user can find
+/// it in Task Scheduler, and used verbatim by every schtasks call here.
+pub const TASK_NAME: &str = "PawPack Slideshow";
+
+/// Run schtasks, with no console window flashing on each call.
+#[cfg(target_os = "windows")]
+fn schtasks(args: &[&str]) -> Result<std::process::Output, String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    std::process::Command::new("schtasks")
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("Could not run schtasks: {e}"))
+}
+
+/// Register (or re-register) the rotation task. `/f` makes this idempotent, so
+/// changing the interval is just another create.
+///
+/// The task runs as the current user with no elevation: rotation only writes
+/// HKCU and reads files PawPack already owns.
+#[cfg(target_os = "windows")]
+pub fn register_task(interval_minutes: u32) -> Result<(), String> {
+    // Task Scheduler cannot repeat faster than once a minute.
+    let every = interval_minutes.max(1).to_string();
+
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("Cannot locate the PawPack executable: {e}"))?;
+    let command = format!("\"{}\" --rotate", exe.display());
+
+    let out = schtasks(&[
+        "/create", "/tn", TASK_NAME, "/sc", "minute", "/mo", &every, "/tr", &command, "/f",
+    ])?;
+
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Could not register the background task: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+/// Remove the task. A task that is already gone is success, not an error.
+#[cfg(target_os = "windows")]
+pub fn delete_task() -> Result<(), String> {
+    if !task_exists() {
+        return Ok(());
+    }
+    let out = schtasks(&["/delete", "/tn", TASK_NAME, "/f"])?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Could not remove the background task: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+/// Read from Windows rather than from our own file: the user may have deleted
+/// the task in Task Scheduler behind our back.
+#[cfg(target_os = "windows")]
+pub fn task_exists() -> bool {
+    schtasks(&["/query", "/tn", TASK_NAME]).is_ok_and(|o| o.status.success())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn register_task(_interval_minutes: u32) -> Result<(), String> {
+    Err("The slideshow is only supported on Windows".into())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn delete_task() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn task_exists() -> bool {
+    false
+}
+
+/// The packs directory, resolved without a running Tauri app.
+///
+/// `packs_dir()` needs an `AppHandle`, which the `--rotate` process has no
+/// reason to build. This mirrors Tauri's own `app_data_dir` convention on
+/// Windows: `%APPDATA%\<identifier>`. If the identifier in tauri.conf.json ever
+/// changes, change it here too — a mismatch shows up immediately as a slideshow
+/// that ticks but never changes anything.
+#[cfg(target_os = "windows")]
+pub fn packs_base_from_env() -> Result<PathBuf, String> {
+    let appdata = std::env::var("APPDATA")
+        .map_err(|_| "APPDATA is not set; cannot locate PawPack's data directory".to_string())?;
+    Ok(PathBuf::from(appdata)
+        .join("com.jankeys.pawpack")
+        .join("packs"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
