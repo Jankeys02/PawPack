@@ -40,6 +40,7 @@ New file `packs/slideshow.json`, beside the existing `mix.json`:
 {
   "enabled": true,
   "interval_minutes": 10,
+  "stop_on_apply": true,
   "roles": {
     "Wait":  { "items": [{"pack":"abc","file":"busy1.ani"},
                          {"pack":"def","file":"hourglass.ani"}], "index": 1 },
@@ -135,14 +136,29 @@ affordance — not a broader refactor of Mix.
 
 ## Interaction with existing actions
 
-- **Revert stops the slideshow** (deletes the task). Otherwise reverted cursors
-  silently return on the next tick, which reads as a bug.
-- **Applying a pack stops the slideshow**, for the same reason: an explicit
-  "use this set" must not be overwritten a minute later.
-- **Applying a mix** likewise stops it — same argument.
+- **Revert always stops the slideshow** (deletes the task). This is not
+  configurable: reverting your cursors while a background task keeps
+  re-applying them is simply broken, and no user wants that combination.
+- **Applying a pack or a mix stops the slideshow — but this is a setting.**
+  `stop_on_apply`, default true. On, an explicit "use this set" wins and is not
+  overwritten a minute later. Off, the slideshow keeps its schedule and will
+  reclaim its roles on the next tick, which is what someone who wants a
+  permanent rotation with occasional manual detours expects.
 
-In every case the UI reports that the slideshow was stopped, so the state
-change is never silent.
+When an apply does stop the slideshow, the UI says so — the state change is
+never silent.
+
+### Where the setting lives
+
+`stop_on_apply` is stored in `slideshow.json`, not a new preferences store.
+PawPack owns no app preferences today (`Settings.tsx` deliberately stores
+nothing, exposing only Windows' own pointer flags), and standing up a prefs
+system for one boolean is not worth it. The slideshow already has a config file
+and this setting only means anything when a slideshow exists.
+
+Settings gains a "Slideshow" section holding this one switch, reusing the
+existing `ToggleRow` component. It reads through `get_slideshow` and writes
+through `set_slideshow_stop_on_apply`.
 
 ## Tauri commands
 
@@ -153,6 +169,7 @@ change is never silent.
 | `set_slideshow(enabled, interval_minutes)` | Toggle and interval; registers or deletes the task |
 | `slideshow_status` | Whether the scheduled task is currently registered |
 | `remove_slideshow_task` | Delete the task without altering saved playlists |
+| `set_slideshow_stop_on_apply(enabled)` | Toggle whether apply stops the slideshow |
 
 ## Error handling
 
