@@ -831,7 +831,8 @@ mod windows_cursor {
         RegKey,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        SystemParametersInfoW, SPI_SETCURSORS, SPIF_SENDCHANGE,
+        SystemParametersInfoW, SPI_GETCURSORSHADOW, SPI_SETCURSORS, SPI_SETCURSORSHADOW,
+        SPIF_SENDCHANGE, SPIF_UPDATEINIFILE,
     };
 
     /// All `HKCU\Control Panel\Cursors` value names we snapshot and restore.
@@ -1213,6 +1214,43 @@ mod windows_cursor {
         }
         Ok(())
     }
+
+    /// Whether Windows draws a drop shadow under the pointer — the "Enable
+    /// pointer shadow" box in Mouse Properties. System-wide, not per-pack.
+    pub fn get_shadow() -> Result<bool, String> {
+        // SPI writes a 4-byte BOOL here.
+        let mut enabled: i32 = 0;
+        unsafe {
+            SystemParametersInfoW(
+                SPI_GETCURSORSHADOW,
+                0,
+                Some(&mut enabled as *mut _ as *mut core::ffi::c_void),
+                Default::default(),
+            )
+            .map_err(|e| format!("Cannot read pointer shadow setting: {e}"))?;
+        }
+        Ok(enabled != 0)
+    }
+
+    pub fn set_shadow(enabled: bool) -> Result<(), String> {
+        unsafe {
+            // For the SET action the value travels *in* pvParam rather than
+            // behind it, so this is a cast and not a pointer to a BOOL.
+            //
+            // SPIF_UPDATEINIFILE is correct here (unlike SPI_SETCURSORS): this
+            // setting lives in HKCU\Control Panel\Desktop's
+            // UserPreferencesMask, and without the flag it is lost at logoff.
+            // Verified on Win11: flags 1, 2 and 3 all return TRUE for this action.
+            SystemParametersInfoW(
+                SPI_SETCURSORSHADOW,
+                0,
+                Some(enabled as usize as *mut core::ffi::c_void),
+                SPIF_UPDATEINIFILE | SPIF_SENDCHANGE,
+            )
+            .map_err(|e| format!("Cannot set pointer shadow: {e}"))?;
+        }
+        Ok(())
+    }
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
@@ -1484,6 +1522,31 @@ fn set_cursor_override(
     Err("set_cursor_override is only supported on Windows".into())
 }
 
+/// Read the system-wide "Enable pointer shadow" setting.
+#[tauri::command]
+async fn get_cursor_shadow() -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    return windows_cursor::get_shadow();
+    #[cfg(not(target_os = "windows"))]
+    Err("get_cursor_shadow is only supported on Windows".into())
+}
+
+/// Toggle the system-wide "Enable pointer shadow" setting.
+#[tauri::command]
+async fn set_cursor_shadow(enabled: bool) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    {
+        windows_cursor::set_shadow(enabled)?;
+        // Report what Windows actually holds, not what we asked for.
+        return windows_cursor::get_shadow();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = enabled;
+        Err("set_cursor_shadow is only supported on Windows".into())
+    }
+}
+
 /// Resolve the mix into absolute paths, plus the roles that will be cleared.
 ///
 /// Errors on an empty mix rather than clearing all 17 roles, which is what a
@@ -1674,7 +1737,9 @@ pub fn run() {
             revert_cursors,
             get_mix,
             set_mix_role,
-            apply_mix
+            apply_mix,
+            get_cursor_shadow,
+            set_cursor_shadow
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

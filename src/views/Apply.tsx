@@ -10,6 +10,7 @@ import {
   ShieldAlert,
   ChevronDown,
   ChevronRight,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ROLE_LABELS, unmatchedReason } from "@/lib/roles";
@@ -380,6 +381,65 @@ function EmptyState() {
 
 // ── Main view ─────────────────────────────────────────────────────────────────
 
+/// System-wide "Enable pointer shadow" (SPI_SETCURSORSHADOW) — the same switch
+/// as Mouse Properties > Pointers. Independent of which pack is applied, so it
+/// keeps its own state rather than riding along with an apply.
+function ShadowToggle() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    invoke<boolean>("get_cursor_shadow")
+      .then(setEnabled)
+      .catch((e) => setError(String(e)));
+  }, []);
+
+  const toggle = async () => {
+    if (enabled === null || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // The command returns the value Windows actually holds afterwards.
+      setEnabled(await invoke<boolean>("set_cursor_shadow", { enabled: !enabled }));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mx-6 mt-3 flex items-center gap-3 rounded border border-zinc-700/50 bg-zinc-800/40 px-3 py-2.5">
+      <Sparkles className="h-3.5 w-3.5 shrink-0 text-zinc-600" strokeWidth={1.75} />
+      <div className="min-w-0 flex-1">
+        <div className="text-xs text-zinc-300">Pointer shadow</div>
+        <div className="text-[11px] text-zinc-600">
+          {error ?? "Drop shadow drawn under every cursor, system-wide. Not part of a pack."}
+        </div>
+      </div>
+      <button
+        role="switch"
+        aria-checked={enabled ?? false}
+        aria-label="Pointer shadow"
+        disabled={enabled === null || busy}
+        onClick={toggle}
+        className={cn(
+          "relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-40",
+          enabled ? "bg-amber-500" : "bg-zinc-700",
+        )}
+      >
+        <span
+          className={cn(
+            "absolute top-0.5 h-4 w-4 rounded-full bg-zinc-950 transition-all",
+            enabled ? "left-[18px]" : "left-0.5",
+          )}
+        />
+      </button>
+    </div>
+  );
+}
+
 export default function Apply({
   applied,
   onApplied,
@@ -458,6 +518,8 @@ export default function Apply({
           {" "}are updated and take effect immediately without a reboot.
         </span>
       </div>
+
+      <ShadowToggle />
 
       {/* Load error */}
       {error && (
