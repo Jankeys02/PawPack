@@ -38,22 +38,46 @@ export const ROLE_LABELS: Record<string, string> = Object.fromEntries(
   CURSOR_ROLES.map((r) => [r.reg, r.label]),
 );
 
-/// Cursor names that show up in packs ported from X11/freedesktop themes but
-/// have no Windows counterpart. Windows only defines cursors the window manager
-/// itself arbitrates (resize, drag, wait, reject); these are drawn by each
-/// application from its own bitmaps, so they cannot be set system-wide.
-/// Ordered longest-match-first so "grabbing" wins over "grab".
+/// CSS cursor keywords that have no Windows counterpart.
+///
+/// The CSS keyword set is the de-facto naming standard theme authors follow,
+/// so it is the right vocabulary to recognise in ported packs. Only the
+/// keywords Windows cannot express are listed here — `pointer`, `text`,
+/// `progress`, `not-allowed`, `move` and the eight directional `*-resize`
+/// names all map onto real roles in CURSOR_ROLES and must stay out of this
+/// list, or a perfectly assignable file would be labelled impossible.
+///
+/// Windows only defines cursors the window manager itself arbitrates. These
+/// are drawn by each application from its own bitmaps — Chromium, for one,
+/// ships zoom-in/zoom-out as resources in its own module and falls back to
+/// them precisely because LoadCursor(NULL, ...) has nothing to return.
+///
+/// Longest name first, so "grabbing" is reported before "grab" and "zoom-in"
+/// before "zoom".
 const APP_ONLY_CURSORS = [
-  "zoom-in", "zoom-out", "zoom",
-  "col-resize", "row-resize", "all-scroll",
-  "context-menu", "vertical-text", "no-drop",
-  "closedhand", "openhand", "grabbing", "grab", "alias",
+  "vertical-text", "context-menu", "col-resize", "row-resize", "all-scroll",
+  "zoom-in", "zoom-out", "grabbing", "no-drop", "alias", "grab", "cell",
+  "copy", "zoom",
 ];
+
+/// Match a cursor name as a whole word, tolerating the separators packs use
+/// interchangeably ("zoom-in", "zoom_in", "zoom in", "zoomin").
+function matchesCursorName(stem: string, name: string): boolean {
+  const body = name.replace(/-/g, "[-_ ]?");
+  return new RegExp(`(^|[^a-z0-9])${body}($|[^a-z0-9])`).test(stem);
+}
 
 /// Why a pack file ended up unassigned, for the Apply view's tooltip.
 export function unmatchedReason(file: string): string {
-  const stem = file.replace(/\.(cur|ani)$/i, "").toLowerCase();
-  const appOnly = APP_ONLY_CURSORS.find((n) => stem.includes(n));
+  const stem = file
+    .replace(/\.(cur|ani)$/i, "")
+    .toLowerCase()
+    // Explorer's duplicate suffix, so "arrow - Copy" and "arrow - Copy (2)"
+    // are not read as the CSS "copy" cursor. The leading separator is
+    // required, so a pack's own "copy.cur" survives intact.
+    .replace(/[\s_-]+\(?copy\)?(\s*\(?\d+\)?)?$/, "");
+
+  const appOnly = APP_ONLY_CURSORS.find((n) => matchesCursorName(stem, n));
   return appOnly
     ? `Windows has no "${appOnly}" cursor role. That cursor is drawn by each application from its own bitmaps, so no system setting can override it.`
     : "Filename didn't match a known role. Pick a role from the dropdown to assign it manually.";
