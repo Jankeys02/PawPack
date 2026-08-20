@@ -37,3 +37,24 @@ export const CURSOR_ROLES: CursorRole[] = [
 export const ROLE_LABELS: Record<string, string> = Object.fromEntries(
   CURSOR_ROLES.map((r) => [r.reg, r.label]),
 );
+
+/// Cursor names that show up in packs ported from X11/freedesktop themes but
+/// have no Windows counterpart. Windows only defines cursors the window manager
+/// itself arbitrates (resize, drag, wait, reject); these are drawn by each
+/// application from its own bitmaps, so they cannot be set system-wide.
+/// Ordered longest-match-first so "grabbing" wins over "grab".
+const APP_ONLY_CURSORS = [
+  "zoom-in", "zoom-out", "zoom",
+  "col-resize", "row-resize", "all-scroll",
+  "context-menu", "vertical-text", "no-drop",
+  "closedhand", "openhand", "grabbing", "grab", "alias",
+];
+
+/// Why a pack file ended up unassigned, for the Apply view's tooltip.
+export function unmatchedReason(file: string): string {
+  const stem = file.replace(/\.(cur|ani)$/i, "").toLowerCase();
+  const appOnly = APP_ONLY_CURSORS.find((n) => stem.includes(n));
+  return appOnly
+    ? `Windows has no "${appOnly}" cursor role. That cursor is drawn by each application from its own bitmaps, so no system setting can override it.`
+    : "Filename didn't match a known role. Pick a role from the dropdown to assign it manually.";
+}

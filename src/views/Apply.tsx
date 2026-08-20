@@ -12,7 +12,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { ROLE_LABELS } from "@/lib/roles";
+import { ROLE_LABELS, unmatchedReason } from "@/lib/roles";
 import type { Applied, AppliedTarget } from "@/App";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -194,8 +194,14 @@ function AssignmentsDropdown({ packId, isActive, prefetched }: {
                     <option key={r} value={r}>{r}</option>
                   ))}
                 </select>
-                <span className="text-[11px] text-zinc-600 truncate">
-                  {role ? (ROLE_LABELS[role] ?? "—") : ""}
+                <span
+                  className={cn(
+                    "text-[11px] truncate",
+                    role ? "text-zinc-600" : "cursor-help italic text-zinc-600 underline decoration-dotted underline-offset-2",
+                  )}
+                  title={role ? undefined : unmatchedReason(file)}
+                >
+                  {role ? (ROLE_LABELS[role] ?? "—") : "no matching role"}
                 </span>
               </div>
             ))}
