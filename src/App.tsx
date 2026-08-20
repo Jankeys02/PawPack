@@ -15,6 +15,7 @@ import Apply from "@/views/Apply";
 import Mix from "@/views/Mix";
 import Editor from "@/views/Editor";
 import Debug from "@/views/Debug";
+import SettingsView from "@/views/Settings";
 
 interface PackMeta {
   id: string;
@@ -46,9 +47,6 @@ const mainNav: NavEntry[] = [
   { id: "debug",   label: "Debug",   Icon: FlaskConical   },
 ];
 
-const placeholders: Partial<Record<NavId, { title: string; sub: string }>> = {
-  settings: { title: "Settings", sub: "Configure import paths, export formats, and application preferences." },
-};
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
@@ -83,29 +81,6 @@ function NavButton({
   );
 }
 
-function PlaceholderPanel({ id }: { id: NavId }) {
-  const info = placeholders[id];
-  if (!info) return null;
-  const entry = [...mainNav, { id: "settings" as NavId, label: "Settings", Icon: Settings }].find(
-    (e) => e.id === id,
-  );
-  const Icon = entry?.Icon ?? Settings;
-
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-5">
-      <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-zinc-800 bg-zinc-900">
-        <Icon className="h-6 w-6 text-zinc-600" strokeWidth={1.5} />
-      </div>
-      <div className="text-center">
-        <p className="text-[15px] font-semibold text-zinc-300">{info.title}</p>
-        <p className="mt-1.5 max-w-xs text-sm leading-relaxed text-zinc-600">{info.sub}</p>
-      </div>
-      <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-zinc-700">
-        Coming soon
-      </span>
-    </div>
-  );
-}
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
@@ -239,7 +214,7 @@ export default function App() {
         ) : active === "debug" ? (
           <Debug applied={applied} />
         ) : (
-          <PlaceholderPanel id={active} />
+          <SettingsView />
         )}
       </div>
     </div>
