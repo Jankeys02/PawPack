@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   RefreshCw, AlertCircle, CheckCircle2, Crosshair, Play, Pause, MousePointer2, Save,
@@ -153,7 +153,14 @@ export default function Editor() {
     return () => { cancelled = true; };
   }, [packId]);
 
+  // Bumped on every load; a resolved load that no longer owns the token belongs
+  // to a cursor the user has already navigated away from. Without this, a slow
+  // earlier parse can install its frame while `selected` names a different file,
+  // and Save then writes that file using the wrong reference dimensions.
+  const loadToken = useRef(0);
+
   const open = useCallback(async (entry: CursorEntry) => {
+    const token = ++loadToken.current;
     setSelected(entry);
     setLoaded(null);
     setError(null);
@@ -161,11 +168,12 @@ export default function Editor() {
     setStep(0);
     try {
       const data = await loadCursor(packId, entry);
+      if (token !== loadToken.current) return;
       setLoaded(data);
       const first = data.frames[0];
       setHotspot({ x: first?.hotspot_x ?? 0, y: first?.hotspot_y ?? 0 });
     } catch (e) {
-      setError(String(e));
+      if (token === loadToken.current) setError(String(e));
     }
   }, [packId]);
 
@@ -177,23 +185,27 @@ export default function Editor() {
     return () => clearTimeout(timer);
   }, [playing, step, loaded]);
 
+  // `frame` is whatever the animation is showing; `refFrame` is the fixed
+  // baseline. Everything that reasons about hotspot coordinates — the dirty
+  // check, clamping, and the dimensions sent to the backend — uses refFrame, so
+  // the result cannot depend on which step happened to be on screen.
   const frame = loaded?.frames[step] ?? loaded?.frames[0] ?? null;
-  const original = loaded?.frames[0];
+  const refFrame = loaded?.frames[0] ?? null;
   const dirty =
-    !!original && (hotspot.x !== original.hotspot_x || hotspot.y !== original.hotspot_y);
+    !!refFrame && (hotspot.x !== refFrame.hotspot_x || hotspot.y !== refFrame.hotspot_y);
 
   /// The one way the hotspot moves — canvas, preset, or typed number. Clamps to
   /// the image so a stray keystroke can't write an off-image hotspot.
   const place = (x: number, y: number) => {
-    if (!frame) return;
+    if (!refFrame) return;
     const clamp = (v: number, max: number) =>
       Number.isFinite(v) ? Math.min(max, Math.max(0, Math.round(v))) : 0;
-    setHotspot({ x: clamp(x, frame.width - 1), y: clamp(y, frame.height - 1) });
+    setHotspot({ x: clamp(x, refFrame.width - 1), y: clamp(y, refFrame.height - 1) });
     setSaved(false);
   };
 
   const save = async () => {
-    if (!selected || !frame) return;
+    if (!selected || !refFrame) return;
     setSaving(true);
     setError(null);
     try {
@@ -202,11 +214,15 @@ export default function Editor() {
         cursorName: selected.name,
         x: hotspot.x,
         y: hotspot.y,
-        refW: frame.width,
-        refH: frame.height,
+        refW: refFrame.width,
+        refH: refFrame.height,
       });
       // Re-read from disk so the "original" baseline matches what was written.
-      setLoaded(await loadCursor(packId, selected));
+      // Claims the load token too, so a still-pending open cannot land on top.
+      const token = ++loadToken.current;
+      const reloaded = await loadCursor(packId, selected);
+      if (token !== loadToken.current) return;
+      setLoaded(reloaded);
       setCursors(await invoke<CursorEntry[]>("list_pack_cursors", { packId }));
       setSaved(true);
     } catch (e) {
@@ -335,7 +351,7 @@ export default function Editor() {
                     <input
                       type="number"
                       min={0}
-                      max={frame.width - 1}
+                      max={(refFrame ?? frame).width - 1}
                       value={hotspot.x}
                       onChange={(e) => place(e.target.valueAsNumber, hotspot.y)}
                       className="h-7 w-16 rounded border border-zinc-700 bg-zinc-800 px-2 font-mono text-xs text-zinc-200"
@@ -343,17 +359,17 @@ export default function Editor() {
                     <input
                       type="number"
                       min={0}
-                      max={frame.height - 1}
+                      max={(refFrame ?? frame).height - 1}
                       value={hotspot.y}
                       onChange={(e) => place(hotspot.x, e.target.valueAsNumber)}
                       className="h-7 w-16 rounded border border-zinc-700 bg-zinc-800 px-2 font-mono text-xs text-zinc-200"
                     />
-                    {dirty && original && (
+                    {dirty && refFrame && (
                       <button
-                        onClick={() => place(original.hotspot_x, original.hotspot_y)}
+                        onClick={() => place(refFrame.hotspot_x, refFrame.hotspot_y)}
                         className="text-[11px] text-zinc-500 underline-offset-2 hover:text-zinc-300 hover:underline"
                       >
-                        was {original.hotspot_x}, {original.hotspot_y}
+                        was {refFrame.hotspot_x}, {refFrame.hotspot_y}
                       </button>
                     )}
                   </div>

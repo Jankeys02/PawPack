@@ -187,7 +187,10 @@ pub fn read_mix(packs_base: &Path) -> MixResult {
 
     for (role, r) in mix.roles {
         let entry = MixEntry { role, pack: r.pack, file: r.file };
-        if packs_base.join(&entry.pack).join(&entry.file).is_file() {
+        // Validated here, not just in `set_mix_role`: mix.json is a plain file
+        // that an older build or a hand edit could have filled with a
+        // traversing pack/file pair. Anything that escapes counts as stale.
+        if pack_file_in(packs_base, &entry.pack, &entry.file).is_ok_and(|p| p.is_file()) {
             roles.push(entry);
         } else {
             stale.push(entry);
@@ -569,6 +572,13 @@ fn ani_icon_ranges(data: &[u8]) -> Vec<(usize, usize)> {
 /// Byte length never changes, so this is safe on ANI-embedded frames too.
 fn set_cur_hotspots(data: &mut [u8], x: u32, y: u32, ref_w: u32, ref_h: u32) {
     if data.len() < 6 || ref_w == 0 || ref_h == 0 {
+        return;
+    }
+
+    // Bytes 4..8 of an ICONDIRENTRY are the hotspot only for idType 2
+    // (cursor). For idType 1 (icon), which an ANI may legally embed, they are
+    // wPlanes/wBitCount — writing coordinates there would corrupt the entry.
+    if u16::from_le_bytes([data[2], data[3]]) != 2 {
         return;
     }
 
@@ -1558,7 +1568,13 @@ async fn set_hotspot(
     // mid-write cannot leave a truncated cursor in the pack.
     let tmp = path.with_extension("pawpack-tmp");
     fs::write(&tmp, &data).map_err(|e| e.to_string())?;
-    fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    // A rename over a cursor Windows currently has loaded fails with a sharing
+    // violation. Clean up, or every retry leaves another orphan in the pack.
+    if let Err(e) = fs::rename(&tmp, &path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e.to_string());
+    }
+    Ok(())
 }
 
 /// Report which cursor files map to which system roles, auto-detection and
@@ -1650,7 +1666,11 @@ fn mix_paths_for_apply(
         .roles
         .iter()
         .filter(|e| windows_cursor::CURSOR_REG_NAMES.contains(&e.role.as_str()))
-        .map(|e| (e.role.clone(), packs_base.join(&e.pack).join(&e.file)))
+        .filter_map(|e| {
+            pack_file_in(packs_base, &e.pack, &e.file)
+                .ok()
+                .map(|path| (e.role.clone(), path))
+        })
         .collect();
     if known.is_empty() {
         return Err("Mix is empty — assign at least one cursor before applying".into());
