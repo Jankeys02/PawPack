@@ -7,6 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
+pub mod slideshow;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /// One size-variant image decoded from a `.cur` (or embedded ICO frame).
@@ -153,7 +155,7 @@ fn pack_dir_in(base: &Path, pack_id: &str) -> Result<PathBuf, String> {
 }
 
 /// Resolve `<packs>/<pack_id>/<file>`, refusing either segment if it escapes.
-fn pack_file_in(base: &Path, pack_id: &str, file: &str) -> Result<PathBuf, String> {
+pub(crate) fn pack_file_in(base: &Path, pack_id: &str, file: &str) -> Result<PathBuf, String> {
     if !is_safe_segment(file) {
         return Err("Invalid path".into());
     }
