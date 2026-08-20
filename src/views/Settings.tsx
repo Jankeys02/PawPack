@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Sparkles, Radar, EyeOff, Target, RefreshCw } from "lucide-react";
+import { Sparkles, Radar, EyeOff, Target, RefreshCw, Clapperboard } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ── Settings table ─────────────────────────────────────────────────────────────
@@ -89,6 +89,9 @@ function ToggleRow({
 
 // ── Main view ─────────────────────────────────────────────────────────────────
 
+/** Only the fields Settings needs from `SlideshowState`. */
+interface SlideshowSetting { stop_on_apply: boolean }
+
 export default function Settings() {
   // A key absent from the map means Windows never reported it, which leaves its
   // switch disabled rather than showing a confident but invented "off".
@@ -96,6 +99,9 @@ export default function Settings() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // Null until read. PawPack's own settings live in slideshow.json, not in a
+  // preferences store — this is currently the only one.
+  const [slideshow, setSlideshow] = useState<SlideshowSetting | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -103,6 +109,10 @@ export default function Settings() {
       .then(setFlags)
       .catch((e) => setErrors({ shadow: String(e) }))
       .finally(() => setLoading(false));
+
+    invoke<SlideshowSetting>("get_slideshow")
+      .then(setSlideshow)
+      .catch((e) => setErrors((prev) => ({ ...prev, stop_on_apply: String(e) })));
   };
 
   useEffect(load, []);
@@ -117,6 +127,23 @@ export default function Settings() {
       setFlags((f) => ({ ...f, [key]: now }));
     } catch (e) {
       setErrors((prev) => ({ ...prev, [key]: String(e) }));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const toggleStopOnApply = async () => {
+    if (busy || !slideshow) return;
+    setBusy("stop_on_apply");
+    setErrors((e) => ({ ...e, stop_on_apply: "" }));
+    try {
+      setSlideshow(
+        await invoke<SlideshowSetting>("set_slideshow_stop_on_apply", {
+          enabled: !slideshow.stop_on_apply,
+        }),
+      );
+    } catch (e) {
+      setErrors((prev) => ({ ...prev, stop_on_apply: String(e) }));
     } finally {
       setBusy(null);
     }
@@ -162,6 +189,24 @@ export default function Settings() {
           These are Windows' own pointer settings, the same ones in Mouse Properties.
           PawPack stores nothing — changes are written straight to Windows and take effect
           immediately.
+        </p>
+
+        <p className="mb-1.5 mt-5 font-mono text-[10px] uppercase tracking-wide text-zinc-600">
+          Slideshow
+        </p>
+        <div className="divide-y divide-zinc-800/60 rounded border border-zinc-800 bg-zinc-950/60">
+          <ToggleRow
+            Icon={Clapperboard}
+            label="Applying stops the slideshow"
+            description="Applying a pack or a mix turns the rotation off. Off, the slideshow reclaims its roles on the next tick."
+            enabled={slideshow?.stop_on_apply ?? null}
+            busy={busy === "stop_on_apply"}
+            error={errors.stop_on_apply || null}
+            onToggle={toggleStopOnApply}
+          />
+        </div>
+        <p className="mt-2 text-[11px] text-zinc-700">
+          Reverting your cursors always stops the slideshow, whatever this is set to.
         </p>
       </div>
     </div>
