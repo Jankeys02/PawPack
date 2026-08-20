@@ -479,11 +479,18 @@ fn parse_cur_bytes(data: &[u8]) -> Result<CurInfo, String> {
 
     let image_count = u16::from_le_bytes([data[4], data[5]]) as usize;
 
+    // Bytes 4..8 of an ICONDIRENTRY hold the hotspot only when the directory's
+    // idType is 2 (cursor). For idType 1 (icon), which an .ani may legally
+    // embed, they are wPlanes/wBitCount — reading those as coordinates reports
+    // a nonsense hotspot. `set_cur_hotspots` refuses to write them for the same
+    // reason, so the two sides agree.
+    let is_cursor = u16::from_le_bytes([data[2], data[3]]) == 2;
+
     // Collect hotspots from raw directory entries (6-byte header + 16 bytes each).
     let hotspots: Vec<(u16, u16)> = (0..image_count)
         .map(|i| {
             let base = 6 + i * 16;
-            if base + 8 > data.len() {
+            if !is_cursor || base + 8 > data.len() {
                 return (0, 0);
             }
             let hx = u16::from_le_bytes([data[base + 4], data[base + 5]]);
@@ -2106,6 +2113,22 @@ mod tests {
         set_cur_hotspots(&mut data, 32, 32, 32, 32);
         assert_eq!(hotspot_at(&data, 0), (31, 31));
         assert_eq!(hotspot_at(&data, 1), (63, 63));
+    }
+
+    #[test]
+    fn icon_typed_directories_are_left_alone() {
+        // Same table, but idType 1 (icon). Bytes 4..8 are wPlanes/wBitCount
+        // there, not a hotspot, so neither side may touch them.
+        let mut data = make_multisize_dir();
+        data[2] = 1;
+        for i in 0..2 {
+            let base = 6 + i * 16;
+            data[base + 4..base + 8].copy_from_slice(&[1, 0, 32, 0]); // 1 plane, 32 bpp
+        }
+        let before = data.clone();
+
+        set_cur_hotspots(&mut data, 8, 4, 32, 32);
+        assert_eq!(data, before, "an icon directory must survive untouched");
     }
 
     #[test]
