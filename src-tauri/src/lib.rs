@@ -483,6 +483,82 @@ fn parse_cur_bytes(data: &[u8]) -> Result<CurInfo, String> {
     Ok(CurInfo { frames })
 }
 
+/// Byte ranges of every embedded `icon` chunk in a RIFF ACON blob, in
+/// `LIST fram` order. Shared by the ANI parser and the hotspot editor.
+fn ani_icon_ranges(data: &[u8]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    if data.len() < 12 || &data[0..4] != b"RIFF" || &data[8..12] != b"ACON" {
+        return out;
+    }
+
+    let riff_size = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
+    let end = 8usize.saturating_add(riff_size).min(data.len());
+    let mut pos = 12usize; // skip "RIFF" + size + "ACON"
+
+    while pos + 8 <= end {
+        let chunk_size =
+            u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap()) as usize;
+        let data_start = pos + 8;
+        let data_end = data_start.saturating_add(chunk_size);
+        if data_end > data.len() {
+            break;
+        }
+
+        if &data[pos..pos + 4] == b"LIST"
+            && chunk_size >= 4
+            && &data[data_start..data_start + 4] == b"fram"
+        {
+            let mut inner = data_start + 4;
+            while inner + 8 <= data_end {
+                let inner_size =
+                    u32::from_le_bytes(data[inner + 4..inner + 8].try_into().unwrap()) as usize;
+                let inner_start = inner + 8;
+                let inner_end = inner_start.saturating_add(inner_size);
+                if inner_end > data.len() {
+                    break;
+                }
+                if &data[inner..inner + 4] == b"icon" {
+                    out.push((inner_start, inner_end));
+                }
+                // RIFF pads chunks to 2-byte boundaries.
+                inner = inner_end + (inner_size & 1);
+            }
+        }
+
+        pos = data_end + (chunk_size & 1);
+    }
+
+    out
+}
+
+/// Rewrite the hotspot of every `ICONDIRENTRY` in a CUR/ICO blob, in place.
+///
+/// `x`/`y` are pixel coordinates inside a `ref_w`x`ref_h` reference frame — the
+/// image the user actually clicked on. Each entry is rescaled to its own
+/// dimensions so multi-resolution cursors keep the same visual hotspot.
+/// Byte length never changes, so this is safe on ANI-embedded frames too.
+fn set_cur_hotspots(data: &mut [u8], x: u32, y: u32, ref_w: u32, ref_h: u32) {
+    if data.len() < 6 || ref_w == 0 || ref_h == 0 {
+        return;
+    }
+
+    let count = u16::from_le_bytes([data[4], data[5]]) as usize;
+    for i in 0..count {
+        let base = 6 + i * 16;
+        if base + 16 > data.len() {
+            break;
+        }
+        // Width/height bytes are 0 for 256 px.
+        let dim = |b: u8| if b == 0 { 256u32 } else { b as u32 };
+        let (w, h) = (dim(data[base]), dim(data[base + 1]));
+
+        let hx = (x * w / ref_w).min(w.saturating_sub(1)) as u16;
+        let hy = (y * h / ref_h).min(h.saturating_sub(1)) as u16;
+        data[base + 4..base + 6].copy_from_slice(&hx.to_le_bytes());
+        data[base + 6..base + 8].copy_from_slice(&hy.to_le_bytes());
+    }
+}
+
 /// Walk a `.ani` (RIFF ACON) byte blob and decode every embedded cursor frame.
 ///
 /// Layout: `RIFF ACON [ anih … ] [ rate … ] [ LIST fram [ icon … ]+ ]`
@@ -506,7 +582,11 @@ fn parse_ani_bytes(data: &[u8]) -> Result<AniInfo, String> {
     let mut frame_count = 0u32;
     let mut display_rate = 0u32;
     let mut per_frame_rates: Vec<u32> = Vec::new();
-    let mut frames: Vec<CurInfo> = Vec::new();
+
+    let frames: Vec<CurInfo> = ani_icon_ranges(data)
+        .into_iter()
+        .filter_map(|(s, e)| parse_cur_bytes(&data[s..e]).ok())
+        .collect();
 
     while pos + 8 <= end {
         let chunk_id = &data[pos..pos + 4];
@@ -533,34 +613,6 @@ fn parse_ani_bytes(data: &[u8]) -> Result<AniInfo, String> {
                     .chunks_exact(4)
                     .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
                     .collect();
-            }
-            b"LIST"
-                if chunk_size >= 4
-                    && data_end <= data.len()
-                    && &data[data_start..data_start + 4] == b"fram" =>
-            {
-                let mut inner = data_start + 4;
-                while inner + 8 <= data_end {
-                    let inner_id = &data[inner..inner + 4];
-                    let inner_size = u32::from_le_bytes(
-                        data[inner + 4..inner + 8].try_into().unwrap(),
-                    ) as usize;
-                    let inner_start = inner + 8;
-                    let inner_end = inner_start.saturating_add(inner_size);
-
-                    if inner_end > data.len() {
-                        break;
-                    }
-
-                    if inner_id == b"icon" {
-                        if let Ok(info) = parse_cur_bytes(&data[inner_start..inner_end]) {
-                            frames.push(info);
-                        }
-                    }
-
-                    // RIFF pads chunks to 2-byte boundaries.
-                    inner = inner_end + (inner_size & 1);
-                }
             }
             _ => {}
         }
@@ -1467,6 +1519,44 @@ async fn parse_ani(
     parse_ani_bytes(&data)
 }
 
+/// Move the hotspot of a `.cur` or `.ani` cursor and write it back to the pack.
+///
+/// `x`/`y` are pixel coordinates in the `ref_w`x`ref_h` frame the user clicked;
+/// every image inside the file is rescaled to match.
+#[tauri::command]
+async fn set_hotspot(
+    app: tauri::AppHandle,
+    pack_id: String,
+    cursor_name: String,
+    x: u32,
+    y: u32,
+    ref_w: u32,
+    ref_h: u32,
+) -> Result<(), String> {
+    let base = packs_dir(&app)?;
+    let path = base.join(&pack_id).join(&cursor_name);
+    if !path.starts_with(&base) {
+        return Err("Invalid path".into());
+    }
+
+    let mut data = fs::read(&path).map_err(|e| e.to_string())?;
+
+    let ranges = ani_icon_ranges(&data);
+    if ranges.is_empty() {
+        set_cur_hotspots(&mut data, x, y, ref_w, ref_h);
+    } else {
+        for (start, end) in ranges {
+            set_cur_hotspots(&mut data[start..end], x, y, ref_w, ref_h);
+        }
+    }
+
+    // Write a sibling temp file then rename over the original, so a crash
+    // mid-write cannot leave a truncated cursor in the pack.
+    let tmp = path.with_extension("pawpack-tmp");
+    fs::write(&tmp, &data).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
 /// Report which cursor files map to which system roles, auto-detection and
 /// saved overrides combined, without touching the registry.
 #[tauri::command]
@@ -1730,6 +1820,7 @@ pub fn run() {
             delete_pack,
             parse_cur,
             parse_ani,
+            set_hotspot,
             get_cursor_thumbnail,
             get_pack_thumbnails,
             list_pack_cursors,
@@ -1966,6 +2057,68 @@ mod tests {
     }
 
     #[cfg(target_os = "windows")]
+    /// A cursor directory with two sizes (32 and 64 px) and no image data —
+    /// `set_cur_hotspots` only ever reads the entry table.
+    fn make_multisize_dir() -> Vec<u8> {
+        let mut buf = vec![0u8, 0, 2, 0, 2, 0]; // reserved, type=2, count=2
+        for dim in [32u8, 64] {
+            buf.extend_from_slice(&[dim, dim, 0, 0]); // w, h, colors, reserved
+            buf.extend_from_slice(&[0u8; 4]);         // hotspot x, y
+            buf.extend_from_slice(&[0u8; 8]);         // size, offset
+        }
+        buf
+    }
+
+    fn hotspot_at(data: &[u8], i: usize) -> (u16, u16) {
+        let base = 6 + i * 16;
+        (
+            u16::from_le_bytes([data[base + 4], data[base + 5]]),
+            u16::from_le_bytes([data[base + 6], data[base + 7]]),
+        )
+    }
+
+    #[test]
+    fn hotspot_scales_to_each_image_size() {
+        let mut data = make_multisize_dir();
+        // Click at (8, 4) on a 32x32 view: a quarter across, an eighth down.
+        set_cur_hotspots(&mut data, 8, 4, 32, 32);
+        assert_eq!(hotspot_at(&data, 0), (8, 4), "32 px entry is 1:1");
+        assert_eq!(hotspot_at(&data, 1), (16, 8), "64 px entry doubles");
+    }
+
+    #[test]
+    fn hotspot_stays_inside_the_image() {
+        let mut data = make_multisize_dir();
+        // Bottom-right corner of a 32x32 view — must not land one pixel past.
+        set_cur_hotspots(&mut data, 32, 32, 32, 32);
+        assert_eq!(hotspot_at(&data, 0), (31, 31));
+        assert_eq!(hotspot_at(&data, 1), (63, 63));
+    }
+
+    #[test]
+    fn hotspot_patches_every_ani_frame_without_resizing_it() {
+        let mut ani = make_ani(3);
+        let before = ani.len();
+        let ranges = ani_icon_ranges(&ani);
+        assert_eq!(ranges.len(), 3, "one icon chunk per frame");
+
+        // make_ani's frames are 1x1; widen the entry table so scaling has room.
+        for &(start, _) in &ranges {
+            ani[start + 6] = 32;
+            ani[start + 7] = 32;
+        }
+        for &(start, end) in &ranges {
+            set_cur_hotspots(&mut ani[start..end], 8, 4, 32, 32);
+        }
+
+        assert_eq!(ani.len(), before, "in-place patch keeps RIFF sizes valid");
+        for &(start, end) in &ranges {
+            assert_eq!(hotspot_at(&ani[start..end], 0), (8, 4));
+        }
+        // The parser still walks the file, so the chunk table survived.
+        assert_eq!(parse_ani_bytes(&ani).unwrap().frame_count, 3);
+    }
+
     mod role_match {
         use crate::windows_cursor::role_match;
 
