@@ -3,18 +3,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw, AlertCircle, CheckCircle2, Play, RotateCcw, Shuffle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { CURSOR_ROLES } from "@/lib/roles";
+import CursorGallery, { type CursorEntry, type PackCursors } from "@/components/CursorGallery";
 import type { AppliedTarget, Applied } from "@/App";
 
 interface PackMeta { id: string; name: string; cursor_count: number }
-interface CursorEntry { name: string; kind: string; thumbnail: string }
 interface MixEntry { role: string; pack: string; file: string }
 interface MixResult { roles: MixEntry[]; stale: MixEntry[] }
 interface ApplyMixResult { written: number; cleared: string[] }
 interface CursorAssignment { role: string; file: string }
 interface PackAssignmentResult { assigned: CursorAssignment[]; unmatched: string[] }
-
-/** All cursors of one pack, ready for the gallery. */
-interface PackCursors { pack: PackMeta; cursors: CursorEntry[] }
 
 export default function Mix({
   applied,
@@ -274,41 +271,18 @@ export default function Mix({
 
         {/* Gallery */}
         <div className="flex-1 overflow-y-auto rounded-sm border border-zinc-800 bg-zinc-900/40 p-4">
-          {!selectedRole ? (
-            <div className="flex h-full flex-col items-center justify-center gap-3 text-zinc-600">
-              <Shuffle className="h-6 w-6" strokeWidth={1.5} />
-              <p className="text-sm">Select a role first</p>
-            </div>
-          ) : (
-            library.map((p) => (
-              <div key={p.pack.id} className="mb-5">
-                <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-zinc-600">
-                  {p.pack.name}
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {p.cursors.map((c) => (
-                    <button
-                      key={c.name}
-                      onClick={() => assign(p.pack.id, c.name)}
-                      title={c.name}
-                      className="flex h-14 w-14 items-center justify-center rounded border border-zinc-800 bg-zinc-950/60 transition-colors hover:border-amber-500/40"
-                    >
-                      {c.thumbnail ? (
-                        <img
-                          src={`data:image/png;base64,${c.thumbnail}`}
-                          alt={c.name}
-                          className="h-8 w-8 object-contain"
-                          style={{ imageRendering: "pixelated" }}
-                        />
-                      ) : (
-                        <span className="font-mono text-[9px] text-zinc-700">?</span>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))
-          )}
+          <CursorGallery
+            library={library}
+            onPick={assign}
+            empty={
+              !selectedRole ? (
+                <>
+                  <Shuffle className="h-6 w-6" strokeWidth={1.5} />
+                  <p className="text-sm">Select a role first</p>
+                </>
+              ) : undefined
+            }
+          />
         </div>
       </div>
     </div>

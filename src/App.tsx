@@ -7,12 +7,14 @@ import {
   PawPrint,
   FlaskConical,
   Shuffle,
+  Clapperboard,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import Browse from "@/views/Browse";
 import PackDetail from "@/views/PackDetail";
 import Apply from "@/views/Apply";
 import Mix from "@/views/Mix";
+import Slideshow from "@/views/Slideshow";
 import Editor from "@/views/Editor";
 import Debug from "@/views/Debug";
 import SettingsView from "@/views/Settings";
@@ -21,7 +23,7 @@ import type { PackMeta } from "@/types";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type NavId = "browse" | "editor" | "apply" | "mix" | "debug" | "settings";
+type NavId = "browse" | "editor" | "apply" | "mix" | "slideshow" | "debug" | "settings";
 
 interface NavEntry {
   id: NavId;
@@ -36,6 +38,7 @@ const mainNav: NavEntry[] = [
   { id: "editor",  label: "Editor",  Icon: Pencil         },
   { id: "apply",   label: "Apply",   Icon: MousePointer2  },
   { id: "mix",     label: "Mix",     Icon: Shuffle        },
+  { id: "slideshow", label: "Slideshow", Icon: Clapperboard },
   { id: "debug",   label: "Debug",   Icon: FlaskConical   },
 ];
 
@@ -203,6 +206,8 @@ export default function App() {
           />
         ) : active === "mix" ? (
           <Mix applied={applied} onApplied={handleApplied} onReverted={handleReverted} />
+        ) : active === "slideshow" ? (
+          <Slideshow />
         ) : active === "debug" ? (
           <Debug applied={applied} />
         ) : (
