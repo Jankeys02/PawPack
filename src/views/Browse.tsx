@@ -14,6 +14,7 @@ import {
   FolderOpen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { groupPacks, variantLabel, type PackGroup, type PackMeta } from "@/types";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -24,15 +25,6 @@ import {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-interface PackMeta {
-  id: string;
-  name: string;
-  author: string;
-  description: string;
-  platform: "windows" | "linux" | "unknown";
-  cursor_count: number;
-  imported_at: number; // unix seconds
-}
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
@@ -95,16 +87,54 @@ function CursorThumbnails({ packId }: { packId: string }) {
   );
 }
 
+/// A variant switcher. Only rendered when a download held more than one set,
+/// so an ordinary pack's card is unchanged.
+function VariantChips({
+  packs,
+  selected,
+  onSelect,
+}: {
+  packs: PackMeta[];
+  selected: PackMeta;
+  onSelect: (pack: PackMeta) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1" onClick={(e) => e.stopPropagation()}>
+      {packs.map((p) => (
+        <button
+          key={p.id}
+          onClick={() => onSelect(p)}
+          aria-pressed={p.id === selected.id}
+          className={cn(
+            "rounded-sm border px-1.5 py-0.5 text-[11px] transition-colors",
+            p.id === selected.id
+              ? "border-amber-500/40 bg-amber-500/15 text-amber-300"
+              : "border-zinc-800 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300",
+          )}
+        >
+          {variantLabel(p)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function PackCard({
-  pack,
+  group,
   onDelete,
   onSelect,
 }: {
-  pack: PackMeta;
+  group: PackGroup;
   onDelete: (id: string) => void;
   onSelect: (pack: PackMeta) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const [selectedId, setSelectedId] = useState(group.packs[0].id);
+
+  // A deleted variant leaves a stale id behind, so fall back rather than
+  // rendering nothing.
+  const pack = group.packs.find((p) => p.id === selectedId) ?? group.packs[0];
+  const grouped = group.packs.length > 1;
 
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -127,19 +157,25 @@ function PackCard({
       onClick={() => onSelect(pack)}
       className="group flex flex-col gap-3 rounded-sm border border-zinc-800 bg-zinc-900 p-4 transition-colors hover:border-zinc-700 cursor-pointer"
     >
-      {/* Thumbnails */}
-      <CursorThumbnails packId={pack.id} />
+      {/* Thumbnails — keyed on the pack so switching variant re-fetches */}
+      <CursorThumbnails key={pack.id} packId={pack.id} />
 
       {/* Header */}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold text-zinc-100">{pack.name}</p>
+          <p className="truncate text-sm font-semibold text-zinc-100">
+            {grouped ? group.title : pack.name}
+          </p>
           {pack.author && (
             <p className="mt-0.5 truncate text-xs text-zinc-500">{pack.author}</p>
           )}
         </div>
         <PlatformBadge platform={pack.platform} />
       </div>
+
+      {grouped && (
+        <VariantChips packs={group.packs} selected={pack} onSelect={(p) => setSelectedId(p.id)} />
+      )}
 
       {/* Description */}
       {pack.description && (
@@ -168,7 +204,7 @@ function PackCard({
           )}
         >
           <Trash2 className="h-3 w-3" strokeWidth={1.5} />
-          {confirming ? "Confirm?" : "Delete"}
+          {confirming ? "Confirm?" : grouped ? `Delete ${variantLabel(pack)}` : "Delete"}
         </button>
       </div>
     </div>
@@ -365,8 +401,13 @@ export default function Browse({ onSelect }: { onSelect: (pack: PackMeta) => voi
       ) : (
         <div className="flex-1 overflow-y-auto p-6">
           <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
-            {packs.map((pack) => (
-              <PackCard key={pack.id} pack={pack} onDelete={handleDelete} onSelect={onSelect} />
+            {groupPacks(packs).map((group) => (
+              <PackCard
+                key={group.key}
+                group={group}
+                onDelete={handleDelete}
+                onSelect={onSelect}
+              />
             ))}
           </div>
         </div>

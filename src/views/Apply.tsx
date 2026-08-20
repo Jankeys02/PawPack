@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ROLE_LABELS, unmatchedReason } from "@/lib/roles";
+import { groupPacks, variantLabel, type PackGroup, type PackMeta } from "@/types";
 import type { Applied, AppliedTarget } from "@/App";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -33,15 +34,6 @@ interface CursorEntry {
   thumbnail: string; // base64 PNG, empty string when decoding failed
 }
 
-interface PackMeta {
-  id: string;
-  name: string;
-  author: string;
-  description: string;
-  platform: "windows" | "linux" | "unknown";
-  cursor_count: number;
-  imported_at: number;
-}
 
 type CardStatus =
   | { kind: "idle" }
@@ -216,14 +208,58 @@ function AssignmentsDropdown({ packId, isActive, prefetched }: {
   );
 }
 
+/// Holds the selected variant for a grouped download and renders the ordinary
+/// row for it. A lone pack goes straight through, so its row is unchanged.
+function PackGroupRow({
+  group,
+  isActive,
+  appliedResult,
+  onApplied,
+  onReverted,
+}: {
+  group: PackGroup;
+  isActive: (pack: PackMeta) => boolean;
+  appliedResult: (pack: PackMeta) => PackAssignmentResult | null;
+  onApplied: (pack: PackMeta, result: PackAssignmentResult) => void;
+  onReverted: () => void;
+}) {
+  const [selectedId, setSelectedId] = useState(group.packs[0].id);
+  const pack = group.packs.find((p) => p.id === selectedId) ?? group.packs[0];
+
+  // Follow the applied variant, so the row shows what is actually on screen
+  // rather than whichever variant sorted first.
+  const active = group.packs.find(isActive);
+  const shown = active ?? pack;
+
+  return (
+    <PackRow
+      pack={shown}
+      group={group.packs.length > 1 ? group : null}
+      selectedId={shown.id}
+      onSelectVariant={setSelectedId}
+      isActive={isActive(shown)}
+      appliedResult={appliedResult(shown)}
+      onApplied={(result) => onApplied(shown, result)}
+      onReverted={onReverted}
+    />
+  );
+}
+
 function PackRow({
   pack,
+  group,
+  selectedId,
+  onSelectVariant,
   isActive,
   appliedResult,
   onApplied,
   onReverted,
 }: {
   pack: PackMeta;
+  /** Non-null when this row stands for a download with several variants. */
+  group: PackGroup | null;
+  selectedId: string;
+  onSelectVariant: (id: string) => void;
   isActive: boolean;
   /** Non-null only when this pack is the applied target. */
   appliedResult: PackAssignmentResult | null;
@@ -270,7 +306,9 @@ function PackRow({
         {/* Pack info */}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <p className="truncate text-sm font-semibold text-zinc-100">{pack.name}</p>
+            <p className="truncate text-sm font-semibold text-zinc-100">
+              {group ? group.title : pack.name}
+            </p>
             <PlatformBadge platform={pack.platform} />
             {isActive && (
               <span className="inline-flex items-center gap-1 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-px font-mono text-[10px] uppercase tracking-wide text-amber-400">
@@ -288,6 +326,26 @@ function PackRow({
               {pack.cursor_count > 0 ? `${pack.cursor_count} cursors` : "unknown"}
             </span>
           </div>
+
+          {group && (
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {group.packs.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => onSelectVariant(p.id)}
+                  aria-pressed={p.id === selectedId}
+                  className={cn(
+                    "rounded-sm border px-1.5 py-0.5 text-[11px] transition-colors",
+                    p.id === selectedId
+                      ? "border-amber-500/40 bg-amber-500/15 text-amber-300"
+                      : "border-zinc-800 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300",
+                  )}
+                >
+                  {variantLabel(p)}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Actions */}
@@ -478,16 +536,20 @@ export default function Apply({
       ) : (
         <div className="flex-1 overflow-y-auto p-6">
           <div className="flex flex-col gap-2">
-            {packs.map((pack) => (
-              <PackRow
-                key={pack.id}
-                pack={pack}
-                isActive={applied?.target.kind === "pack" && applied.target.id === pack.id}
-                appliedResult={appliedResult?.packId === pack.id ? appliedResult.result : null}
-                onApplied={(result) => {
-                  setAppliedResult({ packId: pack.id, result });
+            {groupPacks(packs).map((group) => (
+              <PackGroupRow
+                key={group.key}
+                group={group}
+                isActive={(p) =>
+                  applied?.target.kind === "pack" && applied.target.id === p.id
+                }
+                appliedResult={(p) =>
+                  appliedResult?.packId === p.id ? appliedResult.result : null
+                }
+                onApplied={(p, result) => {
+                  setAppliedResult({ packId: p.id, result });
                   setJustReverted(false);
-                  onApplied({ kind: "pack", id: pack.id, name: pack.name });
+                  onApplied({ kind: "pack", id: p.id, name: p.name });
                 }}
                 onReverted={() => {
                   setAppliedResult(null);
