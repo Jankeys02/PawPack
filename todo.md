@@ -30,19 +30,21 @@
 - [x] **Pack detail view** — click a card to see all cursors in the pack
   - New view `src/views/PackDetail.tsx`; add navigation state to [src/App.tsx](src/App.tsx)
   - List all `.cur` / `.ani` files in `packs/<id>/`; show thumbnail grid
-- [ ] **Live cursor preview** — hover a preview area to see the actual rendered cursor
+- [x] **Live cursor preview** — hover a preview area to see the actual rendered cursor
   - Generate a data URL from the decoded cursor; apply via CSS `cursor: url(data:image/png;base64,...) <hx> <hy>, auto`
   - Hotspot `hx`/`hy` comes from `ICONDIRENTRY` parsed above
 
 ## Phase 4 — Editor
 
-- [ ] **Hotspot editor** — click on canvas to position hotspot on a cursor image
+- [x] **Hotspot editor** — click on canvas to position hotspot on a cursor image
   - Hotspot is two `uint16` values at byte offset 10 & 12 in the `.cur` `ICONDIRENTRY` — [CUR spec](https://en.wikipedia.org/wiki/ICO_(file_format)#PNG_stored_as_ICO)
-  - Canvas `onClick` → compute pixel coords → Tauri command `set_hotspot(pack_id, cursor_name, x, y)` that rewrites those 4 bytes in [src-tauri/src/lib.rs](src-tauri/src/lib.rs)
+  - Canvas `onClick` → compute pixel coords → Tauri command `set_hotspot(pack_id, cursor_name, x, y, ref_w, ref_h)` that rewrites those 4 bytes in [src-tauri/src/lib.rs](src-tauri/src/lib.rs)
+  - Scaled per `ICONDIRENTRY` so multi-size cursors stay aligned; `.ani` patched frame-by-frame via `ani_icon_ranges`, byte length unchanged so RIFF sizes stay valid
+  - UI in [src/views/Editor.tsx](src/views/Editor.tsx): pack picker, cursor rail, zoomed canvas, `.ani` playback, live hover preview
 - [ ] **`.ani` frame timeline** — frame list, per-frame delay editing, playback preview
   - Rewrite `anih` + `rate` RIFF chunks with new delays; re-encode frames — [ANI format](https://www.gdgsoft.com/anituner/help/aniformat.htm)
   - Use `requestAnimationFrame` loop in the frontend for playback preview
-- [ ] **Save edited cursor back to pack storage**
+- [x] **Save edited cursor back to pack storage** — `set_hotspot` writes `.pawpack-tmp` then renames
   - New Tauri command `save_cursor(pack_id, cursor_name, data: Vec<u8>)` in [src-tauri/src/lib.rs](src-tauri/src/lib.rs)
   - Atomic write: write to `.tmp` then rename to avoid corruption
 

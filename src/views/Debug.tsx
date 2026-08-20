@@ -1,16 +1,9 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { CURSOR_ROLES } from "@/lib/roles";
+import { bestFrame, frameToCssCursor, type CurFrame } from "@/lib/utils";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-interface CurFrame {
-  width: number;
-  height: number;
-  hotspot_x: number;
-  hotspot_y: number;
-  rgba: number[];
-}
 
 interface CurInfo  { frames: CurFrame[]; }
 interface AniInfo  { frames: CurInfo[];  }
@@ -30,29 +23,6 @@ const ROLE_CSS: Record<string, string> = {
 
 // Roles with no CSS equivalent — must be driven by the pack's actual cursor image
 const NO_CSS_ROLES = new Set(["UpArrow", "NWPen", "Pin", "Person"]);
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function bestFrame(frames: CurFrame[]): CurFrame | null {
-  if (!frames.length) return null;
-  return (
-    frames.find((f) => f.width === 32 && f.height === 32) ??
-    frames.reduce((a, b) => a.width * a.height >= b.width * b.height ? a : b)
-  );
-}
-
-function frameToCssUrl(frame: CurFrame): string {
-  const canvas = document.createElement("canvas");
-  canvas.width  = frame.width;
-  canvas.height = frame.height;
-  const ctx = canvas.getContext("2d")!;
-  ctx.putImageData(
-    new ImageData(new Uint8ClampedArray(frame.rgba), frame.width, frame.height),
-    0, 0,
-  );
-  const dataUrl = canvas.toDataURL("image/png");
-  return `url('${dataUrl}') ${frame.hotspot_x} ${frame.hotspot_y}, auto`;
-}
 
 // ── Main view ─────────────────────────────────────────────────────────────────
 
@@ -103,7 +73,7 @@ export default function Debug({ applied }: Props) {
               });
               frame = bestFrame(cur.frames);
             }
-            if (frame) cursors[role] = frameToCssUrl(frame);
+            if (frame) cursors[role] = frameToCssCursor(frame);
           } catch {
             // leave this role without a custom cursor
           }

@@ -13,6 +13,7 @@ import Browse from "@/views/Browse";
 import PackDetail from "@/views/PackDetail";
 import Apply from "@/views/Apply";
 import Mix from "@/views/Mix";
+import Editor from "@/views/Editor";
 import Debug from "@/views/Debug";
 
 interface PackMeta {
@@ -46,8 +47,7 @@ const mainNav: NavEntry[] = [
 ];
 
 const placeholders: Partial<Record<NavId, { title: string; sub: string }>> = {
-  editor:   { title: "Cursor Editor", sub: "Adjust hotspot positions and frame timelines for animated .ani cursors." },
-  settings: { title: "Settings",     sub: "Configure import paths, export formats, and application preferences."   },
+  settings: { title: "Settings", sub: "Configure import paths, export formats, and application preferences." },
 };
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
@@ -226,6 +226,8 @@ export default function App() {
           ) : (
             <Browse onSelect={setSelectedPack} />
           )
+        ) : active === "editor" ? (
+          <Editor />
         ) : active === "apply" ? (
           <Apply
             applied={applied}
