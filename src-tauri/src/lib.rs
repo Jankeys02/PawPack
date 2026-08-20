@@ -909,6 +909,7 @@ mod windows_cursor {
         ("personselect", "Person"),
         ("person", "Person"),
         ("handpoint", "Hand"),
+        ("pointing", "Hand"),
         ("finger", "Hand"),
         ("link", "Hand"),
         ("hand", "Hand"),
@@ -958,6 +959,7 @@ mod windows_cursor {
         ("classic", "Arrow"),
         ("normal", "Arrow"),
         ("default", "Arrow"),
+        ("idle", "Arrow"),
         ("arrow", "Arrow"),
         ("select", "Hand"),
     ];
@@ -2012,9 +2014,21 @@ mod tests {
 
         #[test]
         fn unrelated_names_stay_unmatched() {
-            assert_eq!(role("Rocky_Idle"), None);
             assert_eq!(role("Tau Ceti"), None);
             assert_eq!(role("Capsule_Open"), None);
+        }
+
+        #[test]
+        fn resting_and_pointing_pointers_match() {
+            // A pack shipping both means the resting pointer and the link
+            // pointer; "idle" is as common a name for the default as "normal".
+            assert_eq!(role("Rocky_Idle"), Some("Arrow"));
+            assert_eq!(role("Rocky_Pointing_Cursor"), Some("Hand"));
+            // Whole-word matching means "point" alone never reaches "pointing",
+            // which is why it needs its own entry.
+            assert_eq!(role("Pointing hand"), Some("Hand"));
+            // A doubled extension leaves ".ani" as just another word in the stem.
+            assert_eq!(role("Rocky_Idle_Curso.ani"), Some("Arrow"));
         }
 
         #[test]
