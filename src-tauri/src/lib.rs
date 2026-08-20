@@ -831,7 +831,7 @@ mod windows_cursor {
         RegKey,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        SystemParametersInfoW, SPI_SETCURSORS, SPIF_SENDCHANGE, SPIF_UPDATEINIFILE,
+        SystemParametersInfoW, SPI_SETCURSORS, SPIF_SENDCHANGE,
     };
 
     /// All `HKCU\Control Panel\Cursors` value names we snapshot and restore.
@@ -1200,17 +1200,16 @@ mod windows_cursor {
 
     fn call_spi_set_cursors() -> Result<(), String> {
         unsafe {
-            // SPIF_UPDATEINIFILE persists to the user profile;
             // SPIF_SENDCHANGE broadcasts WM_SETTINGCHANGE so apps update live.
             //
-            // SPI_SETCURSORS sometimes returns FALSE with GetLastError()==0 on
-            // Windows 10/11 when the legacy win.ini flush is a no-op. Treat that
-            // as success — the registry writes already took effect.
-            if let Err(e) = SystemParametersInfoW(SPI_SETCURSORS, 0, None, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE) {
-                if e.code().0 != 0 {
-                    return Err(format!("SystemParametersInfoW failed: {e}"));
-                }
-            }
+            // No SPIF_UPDATEINIFILE: on Windows 10/11 SPI_SETCURSORS always
+            // returns FALSE when that flag is set (the legacy win.ini flush is
+            // gone) and leaves a stale GetLastError behind, which the windows
+            // crate then reports as a bogus failure. The registry write above is
+            // the persistence — win.ini is not involved — so the flag buys
+            // nothing. Verified: flags 1 and 3 return FALSE, 0 and 2 return TRUE.
+            SystemParametersInfoW(SPI_SETCURSORS, 0, None, SPIF_SENDCHANGE)
+                .map_err(|e| format!("SystemParametersInfoW failed: {e}"))?;
         }
         Ok(())
     }
