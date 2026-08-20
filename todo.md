@@ -104,6 +104,8 @@
   - Add listener in [src/views/Browse.tsx](src/views/Browse.tsx); pass dropped paths to existing `import_pack` command
 - [ ] **Settings view** — configure default import path, apply behaviour
   - [x] View exists at [src/views/Settings.tsx](src/views/Settings.tsx) and is wired up in [src/App.tsx](src/App.tsx); hosts the pointer shadow toggle under a "System cursor" group
+  - [x] Pointer group: shadow, hide-while-typing, show-location-on-Ctrl, snap-to-default — all four are Windows' own settings, so PawPack stores nothing
+  - [ ] **Cursor size** — not shipped: writing `CursorBaseSize` under `HKCU\Control Panel\Cursors` and broadcasting `SPI_SETCURSORS` updates the registry but leaves `GetSystemMetrics(SM_CXCURSOR)` at 32, even in a freshly started process. Needs the real mechanism (possibly `HKCU\Software\Microsoft\Accessibility\CursorSize`, or a logoff) before exposing a control that appears to do nothing
   - [ ] Default import path and apply behaviour — nothing yet, and unlike the shadow toggle these are ours to store rather than Windows'
   - [ ] Persist settings to `app_data_dir/settings.json` via a Tauri command
 - [ ] **Replace default Tauri icon with PawPack icon**
