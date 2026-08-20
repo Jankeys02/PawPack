@@ -69,20 +69,27 @@ function CursorThumbnails({ packId }: { packId: string }) {
   if (loaded && srcs.length === 0) return null;
 
   return (
-    <div className="flex h-16 items-center justify-center gap-2 rounded bg-zinc-950/60 px-2">
-      {!loaded
-        ? Array.from({ length: 9 }).map((_, i) => (
-            <div key={i} className="h-8 w-8 animate-pulse rounded bg-zinc-800" />
-          ))
-        : srcs.map((src, i) => (
-            <img
-              key={i}
-              src={src}
-              alt=""
-              className="h-10 w-10 object-contain"
-              style={{ imageRendering: "pixelated" }}
-            />
-          ))}
+    // Scrolls horizontally rather than overflowing the card. The inner
+    // `w-max mx-auto` is what centres a short strip while leaving a long one
+    // fully reachable — `justify-center` on the scroller itself would push the
+    // first thumbnails past the left edge, where they cannot be scrolled back
+    // into view.
+    <div className="h-16 overflow-x-auto rounded bg-zinc-950/60 px-2 [scrollbar-width:thin]">
+      <div className="mx-auto flex h-full w-max items-center gap-2">
+        {!loaded
+          ? Array.from({ length: 9 }).map((_, i) => (
+              <div key={i} className="h-8 w-8 shrink-0 animate-pulse rounded bg-zinc-800" />
+            ))
+          : srcs.map((src, i) => (
+              <img
+                key={i}
+                src={src}
+                alt=""
+                className="h-10 w-10 shrink-0 object-contain"
+                style={{ imageRendering: "pixelated" }}
+              />
+            ))}
+      </div>
     </div>
   );
 }
