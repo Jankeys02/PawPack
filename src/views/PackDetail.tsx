@@ -1,3 +1,4 @@
+import type { PackMeta } from "@/types";
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, MousePointer2, RefreshCw, AlertCircle } from "lucide-react";
@@ -5,15 +6,6 @@ import { cn } from "@/lib/utils";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-interface PackMeta {
-  id: string;
-  name: string;
-  author: string;
-  description: string;
-  platform: "windows" | "linux" | "unknown";
-  cursor_count: number;
-  imported_at: number;
-}
 
 interface CursorEntry {
   name: string;

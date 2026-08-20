@@ -105,6 +105,17 @@ pub struct PackMeta {
     pub cursor_count: usize,
     /// Unix timestamp (seconds)
     pub imported_at: u64,
+    /// Set when one download held several complete cursor sets. Packs sharing
+    /// a group are shown as one entry with a variant switcher.
+    ///
+    /// Each variant stays its own pack on disk: a variant *is* a full set of
+    /// roles, so it is the thing that gets applied. Grouping is presentation,
+    /// which is why nothing in the apply, mix or editor paths has to know.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// This pack's name within its group ("Moga Black"). None when ungrouped.
+    #[serde(default)]
+    pub variant: Option<String>,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -475,7 +486,50 @@ fn find_pack_variants(extracted: &Path) -> Vec<PathBuf> {
 }
 
 /// Core import logic shared by both zip and folder imports.
-fn do_import(app: &tauri::AppHandle, source: &Path, raw_name: &str) -> Result<PackMeta, String> {
+/// Strip the noise download sites bolt onto a filename, so a group is titled
+/// "miyabi-zzz" rather than "miyabi-zzz_6qcd_VSTHEMES-ORG".
+///
+/// Two kinds of suffix come off, repeatedly: the site's own marker, and the
+/// short generated id these sites append to make each download unique. Splitting
+/// only on `_` matters — the marker contains a hyphen of its own, and plenty of
+/// real pack names are hyphenated.
+fn tidy_download_name(raw: &str) -> String {
+    const MARKERS: &[&str] = &["vsthemes-org", "vsthemes"];
+    fn sep(s: &str) -> &str {
+        s.trim_end_matches(['-', '_', ' ', '.'])
+    }
+
+    let mut out = sep(raw);
+    loop {
+        let lower = out.to_ascii_lowercase();
+        if let Some(m) = MARKERS.iter().find(|m| lower.ends_with(*m)) {
+            out = sep(&out[..out.len() - m.len()]);
+            continue;
+        }
+        // "_6qcd", "_992bd4d17b" — alphanumeric, has a digit, and short enough
+        // that a real word like "cursors" or a version like "v2" is not eaten.
+        let id_like = out.rsplit_once('_').filter(|(head, tail)| {
+            !head.is_empty()
+                && (4..=12).contains(&tail.len())
+                && tail.chars().all(|c| c.is_ascii_alphanumeric())
+                && tail.chars().any(|c| c.is_ascii_digit())
+        });
+        match id_like {
+            Some((head, _)) => out = sep(head),
+            None => break,
+        }
+    }
+
+    // A pack legitimately named after the site keeps its name.
+    if out.is_empty() { sep(raw).to_string() } else { out.to_string() }
+}
+
+fn do_import(
+    app: &tauri::AppHandle,
+    source: &Path,
+    raw_name: &str,
+    group: Option<(String, String)>,
+) -> Result<PackMeta, String> {
     let id = slugify(raw_name);
     if id.is_empty() {
         return Err("Could not generate a valid ID from the pack name".into());
@@ -500,6 +554,8 @@ fn do_import(app: &tauri::AppHandle, source: &Path, raw_name: &str) -> Result<Pa
         platform,
         cursor_count,
         imported_at: now_unix(),
+        group: group.as_ref().map(|(g, _)| g.clone()),
+        variant: group.map(|(_, v)| v),
     };
 
     let json = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
@@ -1577,13 +1633,23 @@ fn import_variants(
     let mut errors = Vec::new();
 
     for dir in variants {
-        // "moga - Moga Black" rather than a bare "Moga Black", so variants from
-        // different downloads cannot collide on the same slug.
-        let name = match (single, dir.file_name().and_then(|n| n.to_str())) {
-            (false, Some(folder)) if dir != root => format!("{raw_name} - {folder}"),
-            _ => raw_name.to_string(),
+        let folder = dir.file_name().and_then(|n| n.to_str());
+        let grouped = match (single, folder) {
+            (false, Some(folder)) if dir != root => Some(folder.to_string()),
+            _ => None,
         };
-        match do_import(app, &dir, &name) {
+
+        // The id must stay unique per variant, so it keeps the download prefix
+        // even though the card will show only the variant's own name.
+        let id_source = match &grouped {
+            Some(folder) => format!("{} - {folder}", tidy_download_name(raw_name)),
+            None => raw_name.to_string(),
+        };
+        let group = grouped
+            .clone()
+            .map(|folder| (tidy_download_name(raw_name), folder));
+
+        match do_import(app, &dir, &id_source, group) {
             Ok(meta) => imported.push(meta),
             Err(e) => errors.push(e),
         }
@@ -2294,6 +2360,34 @@ mod tests {
     /// are third-party art and far too large to vendor, so the shapes are
     /// rebuilt here — detection only ever looks at names and extensions, so the
     /// files can be empty.
+    mod download_names {
+        use crate::tidy_download_name;
+
+        #[test]
+        fn site_markers_and_hashes_are_stripped() {
+            assert_eq!(tidy_download_name("moga_992bd4d17b_VSTHEMES-ORG"), "moga");
+            assert_eq!(tidy_download_name("miyabi-zzz_6qcd_VSTHEMES-ORG"), "miyabi-zzz");
+            assert_eq!(
+                tidy_download_name("windows-11-cursors-concept-v2_6qcd_VSTHEMES-ORG"),
+                "windows-11-cursors-concept-v2",
+            );
+        }
+
+        #[test]
+        fn ordinary_names_survive() {
+            assert_eq!(tidy_download_name("Bog cursor pack"), "Bog cursor pack");
+            assert_eq!(tidy_download_name("brush-buddy-cursor"), "brush-buddy-cursor");
+            // "v2" is short enough not to look like a hash.
+            assert_eq!(tidy_download_name("my-pack-v2"), "my-pack-v2");
+        }
+
+        #[test]
+        fn stripping_never_empties_the_name() {
+            assert_eq!(tidy_download_name("VSTHEMES-ORG"), "VSTHEMES-ORG");
+            assert_eq!(tidy_download_name("deadbeef"), "deadbeef");
+        }
+    }
+
     mod pack_variants {
         use crate::{detect_pack, find_pack_variants};
         use std::fs;

@@ -16,16 +16,8 @@ import Mix from "@/views/Mix";
 import Editor from "@/views/Editor";
 import Debug from "@/views/Debug";
 import SettingsView from "@/views/Settings";
+import type { PackMeta } from "@/types";
 
-interface PackMeta {
-  id: string;
-  name: string;
-  author: string;
-  description: string;
-  platform: "windows" | "linux" | "unknown";
-  cursor_count: number;
-  imported_at: number;
-}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
