@@ -64,6 +64,17 @@
 - [x] **Apply view UI** — select pack, apply / revert buttons, status feedback
   - New view `src/views/Apply.tsx`; wire up in [src/App.tsx](src/App.tsx) (currently placeholder)
   - Show applied pack name + timestamp; disable Apply if already active pack
+- [ ] **Per-app cursor packs** — swap the active pack when a given app takes focus
+  - `SetWinEventHook(EVENT_SYSTEM_FOREGROUND, ..., WINEVENT_OUTOFCONTEXT)` runs its callback *in PawPack's own process* — no DLL is injected into the target app, so this works against Chrome and other CIG-hardened processes — [MSDN SetWinEventHook](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwineventhook)
+  - Needs the `Win32_UI_Accessibility` feature on the [`windows` crate](https://docs.rs/windows) in [Cargo.toml](src-tauri/Cargo.toml); `SetWinEventHook` and `EVENT_SYSTEM_FOREGROUND` are already vendored
+  - Resolve the foreground process via `GetWindowThreadProcessId` + `QueryFullProcessImageNameW` with `PROCESS_QUERY_LIMITED_INFORMATION`
+  - Rules (`photoshop.exe → Bog pack`, else default) persist to `app_data_dir/rules.json`; applying reuses the existing `windows_cursor::write_roles`
+  - Caveats, in priority order:
+    1. Each switch is 17 registry writes + an `SPI_SETCURSORS` broadcast — debounce, and skip when the target pack is already active, or fast alt-tabbing will stutter
+    2. It is a *swap*, not a scope: cursors stay global, so anything reading the registry mid-switch sees the transition
+    3. Elevated foreground windows may refuse to yield their image name to a non-elevated PawPack
+    4. A crash leaves whatever was written last — needs restore-on-exit, reusing the `revert.json` snapshot
+  - Does **not** enable zoom cursors. Focus does not add an 18th role — `HKLM\...\Control Panel\Cursors\Schemes` entries are positional with exactly 17 cursor slots, so no scheme can express one
 
 ## Phase 6 — Export
 
