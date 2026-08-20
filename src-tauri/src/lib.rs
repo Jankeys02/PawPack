@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -117,6 +117,36 @@ fn packs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .join("packs");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
+}
+
+/// True only for a single, ordinary path segment — one `Component::Normal`.
+///
+/// Rejects `..`, `.`, anything containing a separator, and Windows prefixes
+/// like `C:`. This is what the path guards need, rather than the
+/// `path.starts_with(&base)` they used to do: `starts_with` compares
+/// components, so `base.join("..")` starts with `base` and a `..` walked
+/// straight out of the packs directory. Checking the untrusted segment itself
+/// is both stricter and works on paths that do not exist yet, which
+/// `canonicalize` cannot.
+fn is_safe_segment(seg: &str) -> bool {
+    let mut parts = Path::new(seg).components();
+    matches!(parts.next(), Some(Component::Normal(_))) && parts.next().is_none()
+}
+
+/// Resolve `<packs>/<pack_id>`, refusing any id that escapes `base`.
+fn pack_dir_in(base: &Path, pack_id: &str) -> Result<PathBuf, String> {
+    if !is_safe_segment(pack_id) {
+        return Err("Invalid pack id".into());
+    }
+    Ok(base.join(pack_id))
+}
+
+/// Resolve `<packs>/<pack_id>/<file>`, refusing either segment if it escapes.
+fn pack_file_in(base: &Path, pack_id: &str, file: &str) -> Result<PathBuf, String> {
+    if !is_safe_segment(file) {
+        return Err("Invalid path".into());
+    }
+    Ok(pack_dir_in(base, pack_id)?.join(file))
 }
 
 /// Load per-pack role overrides. Keys are registry role names; values are
@@ -1317,17 +1347,10 @@ async fn get_cursor_thumbnail(
 ) -> Result<String, String> {
     let base = packs_dir(&app)?;
     let path = if cursor_name.is_empty() {
-        let pack_dir = base.join(&pack_id);
-        if !pack_dir.starts_with(&base) {
-            return Err("Invalid pack id".into());
-        }
+        let pack_dir = pack_dir_in(&base, &pack_id)?;
         find_first_cursor(&pack_dir)?
     } else {
-        let p = base.join(&pack_id).join(&cursor_name);
-        if !p.starts_with(&base) {
-            return Err("Invalid path".into());
-        }
-        p
+        pack_file_in(&base, &pack_id, &cursor_name)?
     };
     cursor_path_to_b64(&path)
 }
@@ -1339,10 +1362,7 @@ async fn get_pack_thumbnails(
     limit: usize,
 ) -> Result<Vec<String>, String> {
     let base = packs_dir(&app)?;
-    let pack_dir = base.join(&pack_id);
-    if !pack_dir.starts_with(&base) {
-        return Err("Invalid pack id".into());
-    }
+    let pack_dir = pack_dir_in(&base, &pack_id)?;
 
     let mut files: Vec<PathBuf> = fs::read_dir(&pack_dir)
         .map_err(|e| e.to_string())?
@@ -1430,11 +1450,7 @@ fn import_pack(app: tauri::AppHandle, source_path: String) -> Result<PackMeta, S
 #[tauri::command]
 fn delete_pack(app: tauri::AppHandle, pack_id: String) -> Result<(), String> {
     let base = packs_dir(&app)?;
-    let pack_dir = base.join(&pack_id);
-
-    if !pack_dir.starts_with(&base) {
-        return Err("Invalid pack id".into());
-    }
+    let pack_dir = pack_dir_in(&base, &pack_id)?;
     if !pack_dir.exists() {
         return Err("Pack not found".into());
     }
@@ -1448,10 +1464,7 @@ async fn list_pack_cursors(
     pack_id: String,
 ) -> Result<Vec<CursorEntry>, String> {
     let base = packs_dir(&app)?;
-    let pack_dir = base.join(&pack_id);
-    if !pack_dir.starts_with(&base) {
-        return Err("Invalid pack id".into());
-    }
+    let pack_dir = pack_dir_in(&base, &pack_id)?;
 
     let mut files: Vec<PathBuf> = fs::read_dir(&pack_dir)
         .map_err(|e| e.to_string())?
@@ -1496,10 +1509,7 @@ async fn parse_cur(
     cursor_name: String,
 ) -> Result<CurInfo, String> {
     let base = packs_dir(&app)?;
-    let path = base.join(&pack_id).join(&cursor_name);
-    if !path.starts_with(&base) {
-        return Err("Invalid path".into());
-    }
+    let path = pack_file_in(&base, &pack_id, &cursor_name)?;
     let data = fs::read(&path).map_err(|e| e.to_string())?;
     parse_cur_bytes(&data)
 }
@@ -1511,10 +1521,7 @@ async fn parse_ani(
     cursor_name: String,
 ) -> Result<AniInfo, String> {
     let base = packs_dir(&app)?;
-    let path = base.join(&pack_id).join(&cursor_name);
-    if !path.starts_with(&base) {
-        return Err("Invalid path".into());
-    }
+    let path = pack_file_in(&base, &pack_id, &cursor_name)?;
     let data = fs::read(&path).map_err(|e| e.to_string())?;
     parse_ani_bytes(&data)
 }
@@ -1534,10 +1541,7 @@ async fn set_hotspot(
     ref_h: u32,
 ) -> Result<(), String> {
     let base = packs_dir(&app)?;
-    let path = base.join(&pack_id).join(&cursor_name);
-    if !path.starts_with(&base) {
-        return Err("Invalid path".into());
-    }
+    let path = pack_file_in(&base, &pack_id, &cursor_name)?;
 
     let mut data = fs::read(&path).map_err(|e| e.to_string())?;
 
@@ -1564,10 +1568,7 @@ fn get_pack_assignments(app: tauri::AppHandle, pack_id: String) -> Result<PackAs
     #[cfg(target_os = "windows")]
     {
         let base = packs_dir(&app)?;
-        let pack_dir = base.join(&pack_id);
-        if !pack_dir.starts_with(&base) {
-            return Err("Invalid pack id".into());
-        }
+        let pack_dir = pack_dir_in(&base, &pack_id)?;
         if !pack_dir.is_dir() {
             return Err("Pack not found".into());
         }
@@ -1589,10 +1590,7 @@ fn set_cursor_override(
     file: String,
 ) -> Result<PackAssignmentResult, String> {
     let base = packs_dir(&app)?;
-    let pack_dir = base.join(&pack_id);
-    if !pack_dir.starts_with(&base) {
-        return Err("Invalid pack id".into());
-    }
+    let pack_dir = pack_dir_in(&base, &pack_id)?;
     if !pack_dir.is_dir() {
         return Err("Pack not found".into());
     }
@@ -1692,10 +1690,7 @@ fn apply_pack(app: tauri::AppHandle, pack_id: String) -> Result<PackAssignmentRe
     #[cfg(target_os = "windows")]
     {
         let base = packs_dir(&app)?;
-        let pack_dir = base.join(&pack_id);
-        if !pack_dir.starts_with(&base) {
-            return Err("Invalid pack id".into());
-        }
+        let pack_dir = pack_dir_in(&base, &pack_id)?;
         if !pack_dir.is_dir() {
             return Err("Pack not found".into());
         }
@@ -1731,11 +1726,9 @@ fn set_mix_role(
     let base = packs_dir(&app)?;
 
     if !pack_id.is_empty() {
-        let pack_dir = base.join(&pack_id);
-        if !pack_dir.starts_with(&base) {
-            return Err("Invalid pack id".into());
-        }
-        if !pack_dir.join(&file).is_file() {
+        // Validates `file` too — it is persisted into the mix and later
+        // resolved into a registry path, so it must not escape the pack.
+        if !pack_file_in(&base, &pack_id, &file)?.is_file() {
             return Err("Cursor file not found".into());
         }
     }
@@ -2117,6 +2110,43 @@ mod tests {
         }
         // The parser still walks the file, so the chunk table survived.
         assert_eq!(parse_ani_bytes(&ani).unwrap().frame_count, 3);
+    }
+
+    mod path_guard {
+        use crate::{is_safe_segment, pack_dir_in, pack_file_in};
+        use std::path::Path;
+
+        #[test]
+        fn traversal_is_refused() {
+            let base = Path::new("/packs");
+            // `starts_with` used to accept every one of these, because it
+            // compares components and "/packs/.." does start with "/packs".
+            for bad in ["..", "../..", "../evil", "a/b", ".", ""] {
+                assert!(!is_safe_segment(bad), "{bad:?} should be refused");
+                assert!(pack_dir_in(base, bad).is_err(), "pack id {bad:?}");
+                assert!(pack_file_in(base, "ok", bad).is_err(), "file {bad:?}");
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        #[test]
+        fn windows_separators_and_prefixes_are_refused() {
+            for bad in [r"a\b", "C:", r"C:\evil", r"..\evil"] {
+                assert!(!is_safe_segment(bad), "{bad:?} should be refused");
+            }
+        }
+
+        #[test]
+        fn ordinary_names_still_resolve() {
+            let base = Path::new("/packs");
+            assert_eq!(pack_dir_in(base, "bog-cursor-pack").unwrap(), base.join("bog-cursor-pack"));
+            assert_eq!(
+                pack_file_in(base, "bog-cursor-pack", "Diag 1.cur").unwrap(),
+                base.join("bog-cursor-pack").join("Diag 1.cur"),
+            );
+            // A doubled extension is an ordinary name, not a traversal.
+            assert!(pack_file_in(base, "p", "Rocky_Idle_Curso.ani.ani").is_ok());
+        }
     }
 
     mod role_match {
