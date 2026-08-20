@@ -112,7 +112,7 @@
 
 - [x] Fix app identifier → `com.jankeys.pawpack`
 - [ ] **Move `PackMeta` type to shared `src/types.ts`** — currently duplicated in [src/views/Browse.tsx:26-34](src/views/Browse.tsx#L26-L34); import from `src/types.ts` in both the view and any future views
-- [ ] **`parse_cur_bytes` reads hotspots without checking `idType`** — [src-tauri/src/lib.rs](src-tauri/src/lib.rs)
+- [x] **`parse_cur_bytes` reads hotspots without checking `idType`** — [src-tauri/src/lib.rs](src-tauri/src/lib.rs)
   - Bytes 4..8 of an `ICONDIRENTRY` are the hotspot only when the directory's `idType` (bytes 2..4) is 2 (cursor). For `idType` 1 (icon), which an `.ani` may legally embed, they are `wPlanes` / `wBitCount`
   - `set_cur_hotspots` already guards this on the write side; the read side still reports those bytes as a hotspot, so such a frame shows a nonsense hotspot in the editor and Debug preview
   - Fix: return `(0, 0)` for non-cursor directories, matching the write-side early return
