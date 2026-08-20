@@ -103,8 +103,9 @@
   - Listen for `tauri://drag-drop` event via `listen()` from `@tauri-apps/api/event` — [Tauri drag-drop docs](https://tauri.app/v1/guides/features/file-drop/)
   - Add listener in [src/views/Browse.tsx](src/views/Browse.tsx); pass dropped paths to existing `import_pack` command
 - [ ] **Settings view** — configure default import path, apply behaviour
-  - Wire up the Settings tab in [src/App.tsx](src/App.tsx) (currently placeholder)
-  - Persist settings to `app_data_dir/settings.json` via a Tauri command
+  - [x] View exists at [src/views/Settings.tsx](src/views/Settings.tsx) and is wired up in [src/App.tsx](src/App.tsx); hosts the pointer shadow toggle under a "System cursor" group
+  - [ ] Default import path and apply behaviour — nothing yet, and unlike the shadow toggle these are ours to store rather than Windows'
+  - [ ] Persist settings to `app_data_dir/settings.json` via a Tauri command
 - [ ] **Replace default Tauri icon with PawPack icon**
   - Replace `src-tauri/icons/` assets; update `tauri.conf.json` `bundle.icon` paths — [Tauri icons guide](https://tauri.app/distribute/icons/)
 
@@ -116,7 +117,7 @@
   - Bytes 4..8 of an `ICONDIRENTRY` are the hotspot only when the directory's `idType` (bytes 2..4) is 2 (cursor). For `idType` 1 (icon), which an `.ani` may legally embed, they are `wPlanes` / `wBitCount`
   - `set_cur_hotspots` already guards this on the write side; the read side still reports those bytes as a hotspot, so such a frame shows a nonsense hotspot in the editor and Debug preview
   - Fix: return `(0, 0)` for non-cursor directories, matching the write-side early return
-- [ ] **Move the pointer shadow toggle into Settings** — [src/views/Apply.tsx](src/views/Apply.tsx)
+- [x] **Move the pointer shadow toggle into Settings** — [src/views/Apply.tsx](src/views/Apply.tsx)
   - It wraps `SPI_GET/SETCURSORSHADOW`, a system-wide preference rather than pack state, and only sits on the Apply screen because the Settings tab is still a placeholder
   - Depends on the **Settings view** item above; move `ShadowToggle` across when that lands
 - [ ] **Fix unicode-unsafe `slugify`** — [src-tauri/src/lib.rs](src-tauri/src/lib.rs)
