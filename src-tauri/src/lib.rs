@@ -414,21 +414,64 @@ fn has_cursor_files(dir: &Path) -> bool {
 /// (READMEs, __MACOSX/, install.inf, etc.) by finding the unique child
 /// directory that actually contains cursor files rather than requiring it to
 /// be the only entry.
-fn find_pack_root(extracted: &Path) -> PathBuf {
-    if has_cursor_files(extracted) {
-        return extracted.to_path_buf();
+/// True if `dir` is itself a cursor pack: Windows cursor files sitting directly
+/// in it, or an Xcursor theme's `cursors/` subdirectory.
+fn is_pack_dir(dir: &Path) -> bool {
+    if has_cursor_files(dir) {
+        return true;
     }
-    if let Ok(entries) = fs::read_dir(extracted) {
-        let cursor_subdirs: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_dir() && has_cursor_files(p))
-            .collect();
-        if let [single] = cursor_subdirs.as_slice() {
-            return single.clone();
+    // Xcursor files carry no extension, so require the conventional layout
+    // rather than treating any directory of extensionless files as a theme.
+    let cursors = dir.join("cursors");
+    cursors.is_dir()
+        && fs::read_dir(&cursors)
+            .map(|e| e.flatten().any(|e| e.path().is_file() && e.path().extension().is_none()))
+            .unwrap_or(false)
+}
+
+/// How far below the archive root to look for pack directories. Real packs nest
+/// their variants one or two levels down (`Windows/Moga Black/`); anything
+/// deeper is a payload we have no business importing.
+const VARIANT_SEARCH_DEPTH: usize = 3;
+
+fn collect_variants(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for sub in entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+        if is_pack_dir(&sub) {
+            // A pack directory is a leaf: its own subfolders are its contents,
+            // not further variants.
+            out.push(sub);
+        } else if depth > 0 {
+            collect_variants(&sub, depth - 1, out);
         }
     }
-    extracted.to_path_buf()
+}
+
+/// Every directory in `extracted` that is a pack in its own right.
+///
+/// Archives from the theme sites routinely ship several at once — a static and
+/// an animated set, or light/dark/colour variants under `Windows/`, alongside
+/// GIF previews, PDFs and macOS tooling. Returning just one of those (or, when
+/// none sits exactly one level down, falling back to the archive root) imports
+/// a pack with no cursors in it and megabytes of unrelated payload.
+///
+/// Sorted so the order does not depend on `read_dir`, which is not stable
+/// across machines. Falls back to the root so a shape we do not recognise is
+/// still imported rather than silently dropped.
+fn find_pack_variants(extracted: &Path) -> Vec<PathBuf> {
+    // A root holding cursors is one pack, not a container of them.
+    if is_pack_dir(extracted) {
+        return vec![extracted.to_path_buf()];
+    }
+
+    let mut out = Vec::new();
+    collect_variants(extracted, VARIANT_SEARCH_DEPTH, &mut out);
+    out.sort();
+
+    if out.is_empty() {
+        out.push(extracted.to_path_buf());
+    }
+    out
 }
 
 /// Core import logic shared by both zip and folder imports.
@@ -1475,7 +1518,7 @@ fn list_packs(app: tauri::AppHandle) -> Result<Vec<PackMeta>, String> {
 }
 
 #[tauri::command]
-fn import_pack(app: tauri::AppHandle, source_path: String) -> Result<PackMeta, String> {
+fn import_pack(app: tauri::AppHandle, source_path: String) -> Result<Vec<PackMeta>, String> {
     let source = PathBuf::from(&source_path);
 
     let is_zip = source
@@ -1499,8 +1542,7 @@ fn import_pack(app: tauri::AppHandle, source_path: String) -> Result<PackMeta, S
         extract_zip(&source, &temp_dir)
             .map_err(|e| format!("Failed to extract zip: {}", e))?;
 
-        let pack_root = find_pack_root(&temp_dir);
-        let result = do_import(&app, &pack_root, raw_name);
+        let result = import_variants(&app, &temp_dir, raw_name);
 
         // Always clean up temp, even on error
         let _ = fs::remove_dir_all(&temp_dir);
@@ -1512,10 +1554,49 @@ fn import_pack(app: tauri::AppHandle, source_path: String) -> Result<PackMeta, S
             .and_then(|n| n.to_str())
             .unwrap_or("unknown-pack");
 
-        do_import(&app, &source, raw_name)
+        // A chosen folder gets the same treatment: it may be the download's
+        // top level rather than a pack, and picking one is no easier by hand.
+        import_variants(&app, &source, raw_name)
     } else {
         Err("Source must be a .zip file or a folder".into())
     }
+}
+
+/// Import every pack found under `root`, naming them apart when there is more
+/// than one. Fails only if nothing at all could be imported — one unreadable
+/// variant should not cost the user the others.
+fn import_variants(
+    app: &tauri::AppHandle,
+    root: &Path,
+    raw_name: &str,
+) -> Result<Vec<PackMeta>, String> {
+    let variants = find_pack_variants(root);
+    let single = variants.len() == 1;
+
+    let mut imported = Vec::new();
+    let mut errors = Vec::new();
+
+    for dir in variants {
+        // "moga - Moga Black" rather than a bare "Moga Black", so variants from
+        // different downloads cannot collide on the same slug.
+        let name = match (single, dir.file_name().and_then(|n| n.to_str())) {
+            (false, Some(folder)) if dir != root => format!("{raw_name} - {folder}"),
+            _ => raw_name.to_string(),
+        };
+        match do_import(app, &dir, &name) {
+            Ok(meta) => imported.push(meta),
+            Err(e) => errors.push(e),
+        }
+    }
+
+    if imported.is_empty() {
+        return Err(if errors.is_empty() {
+            "No cursor packs found in that download".into()
+        } else {
+            errors.join("; ")
+        });
+    }
+    Ok(imported)
 }
 
 #[tauri::command]
@@ -2207,6 +2288,112 @@ mod tests {
         }
         // The parser still walks the file, so the chunk table survived.
         assert_eq!(parse_ani_bytes(&ani).unwrap().frame_count, 3);
+    }
+
+    /// Layouts taken from two real VSTHEMES downloads. The archives themselves
+    /// are third-party art and far too large to vendor, so the shapes are
+    /// rebuilt here — detection only ever looks at names and extensions, so the
+    /// files can be empty.
+    mod pack_variants {
+        use crate::{detect_pack, find_pack_variants};
+        use std::fs;
+        use std::path::{Path, PathBuf};
+
+        struct TempTree(PathBuf);
+
+        impl Drop for TempTree {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+
+        fn tree(name: &str, entries: &[&str]) -> TempTree {
+            let root = std::env::temp_dir().join(format!("pawpack-variants-{name}"));
+            let _ = fs::remove_dir_all(&root);
+            for rel in entries {
+                let path = root.join(rel);
+                if rel.ends_with('/') {
+                    fs::create_dir_all(&path).unwrap();
+                } else {
+                    fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    fs::write(&path, b"").unwrap();
+                }
+            }
+            TempTree(root)
+        }
+
+        fn names(root: &Path, found: &[PathBuf]) -> Vec<String> {
+            found
+                .iter()
+                .map(|p| {
+                    p.strip_prefix(root)
+                        .unwrap_or(p)
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                })
+                .collect()
+        }
+
+        /// Two sibling variants plus GIF previews, PDFs and macOS tooling.
+        #[test]
+        fn miyabi_yields_both_animated_and_static() {
+            let t = tree("miyabi", &[
+                "Cursors/Normal.ani", "Cursors/Busy.ani", "Cursors/install.inf",
+                "Static/Normal.cur", "Static/Busy.cur", "Static/install.inf",
+                "Gifs/1.gif", "Gifs/link.gif",
+                "MacOS/Mousecape_1813.zip",
+                "EN.pdf", "RU.pdf", "source.url",
+            ]);
+            let found = find_pack_variants(&t.0);
+            assert_eq!(names(&t.0, &found), ["Cursors", "Static"]);
+            for dir in &found {
+                assert_eq!(detect_pack(dir).0, "windows");
+            }
+            // Previously the two candidates failed the "exactly one" test and
+            // the archive root was imported instead: no cursors, 6 MB of junk.
+            assert_ne!(found[0], t.0);
+        }
+
+        /// Three colour variants two levels down, plus a full Xcursor theme.
+        #[test]
+        fn moga_yields_three_windows_variants_and_the_linux_theme() {
+            let t = tree("moga", &[
+                "Windows/Moga/Normal Select.cur", "Windows/Moga/Busy.ani", "Windows/Moga/Install.inf",
+                "Windows/Moga Black/Normal Select.cur", "Windows/Moga Black/Busy.ani",
+                "Windows/Moga White/Normal Select.cur", "Windows/Moga White/Busy.ani",
+                "Linux/index.theme", "Linux/cursors/left_ptr", "Linux/cursors/zoom-in",
+                "EN.pdf", "source.url",
+            ]);
+            let found = find_pack_variants(&t.0);
+            assert_eq!(
+                names(&t.0, &found),
+                ["Linux", "Windows/Moga", "Windows/Moga Black", "Windows/Moga White"],
+            );
+            assert_eq!(detect_pack(&t.0.join("Linux")).0, "linux");
+            assert_eq!(detect_pack(&t.0.join("Windows/Moga Black")).0, "windows");
+        }
+
+        /// The ordinary case must not regress: cursors at the top level are one
+        /// pack, and its subfolders are contents rather than further variants.
+        #[test]
+        fn a_plain_pack_is_a_single_variant() {
+            let t = tree("plain", &["Arrow.cur", "Busy.ani", "extras/readme.txt"]);
+            assert_eq!(find_pack_variants(&t.0), vec![t.0.clone()]);
+        }
+
+        /// A single wrapping folder, the shape the old code did handle.
+        #[test]
+        fn a_wrapped_pack_unwraps_to_the_inner_folder() {
+            let t = tree("wrapped", &["Some Pack/Arrow.cur", "Some Pack/Busy.ani"]);
+            assert_eq!(names(&t.0, &find_pack_variants(&t.0)), ["Some Pack"]);
+        }
+
+        /// Nothing recognisable still imports as the root rather than vanishing.
+        #[test]
+        fn an_unrecognised_download_falls_back_to_the_root() {
+            let t = tree("empty", &["EN.pdf", "Gifs/1.gif"]);
+            assert_eq!(find_pack_variants(&t.0), vec![t.0.clone()]);
+        }
     }
 
     mod path_guard {

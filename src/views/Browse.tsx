@@ -8,6 +8,7 @@ import {
   MousePointer2,
   RefreshCw,
   AlertCircle,
+  CheckCircle2,
   ChevronDown,
   FileArchive,
   FolderOpen,
@@ -219,11 +220,15 @@ export default function Browse({ onSelect }: { onSelect: (pack: PackMeta) => voi
   const [packs, setPacks] = useState<PackMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Set only when one download produced several packs, which is surprising
+  // enough to say out loud.
+  const [notice, setNotice] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
 
   const loadPacks = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setNotice(null);
     try {
       const result = await invoke<PackMeta[]>("list_packs");
       setPacks(result);
@@ -248,8 +253,13 @@ export default function Browse({ onSelect }: { onSelect: (pack: PackMeta) => voi
 
     setImporting(true);
     try {
-      const meta = await invoke<PackMeta>("import_pack", { sourcePath: selected });
-      setPacks((prev) => [meta, ...prev]);
+      // A download may hold several packs — animated and static sets, or
+      // colour variants — so import_pack returns every one it found.
+      const added = await invoke<PackMeta[]>("import_pack", { sourcePath: selected });
+      setPacks((prev) => [...added, ...prev]);
+      if (added.length > 1) {
+        setNotice(`Imported ${added.length} packs: ${added.map((p) => p.name).join(", ")}`);
+      }
     } catch (e) {
       setError(String(e));
     } finally {
@@ -319,6 +329,19 @@ export default function Browse({ onSelect }: { onSelect: (pack: PackMeta) => voi
       </div>
 
       {/* Error banner */}
+      {notice && (
+        <div className="mx-6 mt-4 flex items-start gap-2 rounded border border-amber-500/20 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-300">
+          <CheckCircle2 className="mt-px h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
+          <span>{notice}</span>
+          <button
+            onClick={() => setNotice(null)}
+            className="ml-auto shrink-0 text-amber-500 hover:text-amber-300"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {error && (
         <div className="mx-6 mt-4 flex items-start gap-2 rounded border border-red-500/20 bg-red-500/10 px-3 py-2.5 text-xs text-red-400">
           <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
