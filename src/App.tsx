@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   Layers,
   Pencil,
@@ -112,8 +113,12 @@ function readApplied(): Applied | null {
 
 export default function App() {
   const [active, setActive] = useState<NavId>("browse");
+  // Read from the bundle rather than typed in: the badge said 0.1 well into 1.0.0.
+  const [version, setVersion] = useState("");
   const [selectedPack, setSelectedPack] = useState<PackMeta | null>(null);
   const [applied, setApplied] = useState<Applied | null>(readApplied);
+
+  useEffect(() => { getVersion().then(setVersion).catch(() => {}); }, []);
 
   const handleApplied = (target: AppliedTarget) => {
     const next: Applied = { target, appliedAt: Date.now() };
@@ -140,7 +145,7 @@ export default function App() {
             PawPack
           </span>
           <span className="ml-auto font-mono text-[10px] tracking-widest text-zinc-600">
-            0.1
+            {version}
           </span>
         </div>
 
