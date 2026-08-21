@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Sparkles, Radar, EyeOff, Target, RefreshCw, Clapperboard, Gauge, MousePointerClick } from "lucide-react";
+import { getVersion } from "@tauri-apps/api/app";
+import { check } from "@tauri-apps/plugin-updater";
+import { Sparkles, Radar, EyeOff, Target, RefreshCw, Clapperboard, Gauge, MousePointerClick, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   MOTION_LEVELS,
@@ -131,6 +133,68 @@ function MotionRow({
         onChange={(e) => onChange(MOTION_LEVELS[Number(e.target.value)])}
         className="h-1 w-20 shrink-0 cursor-pointer appearance-none rounded-full bg-zinc-700 accent-amber-500"
       />
+    </div>
+  );
+}
+
+/// Update check, laid out like ToggleRow with a button where the switch goes.
+///
+/// The whole flow is four states in one string: idle shows the running version,
+/// then checking, then either "up to date" or the new version with a button that
+/// downloads and installs it. Windows' installer closes PawPack itself and starts
+/// the new build, so there is no relaunch call here.
+function UpdateRow() {
+  const [version, setVersion] = useState("");
+  const [status, setStatus] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [pending, setPending] = useState<Awaited<ReturnType<typeof check>>>(null);
+
+  useEffect(() => { getVersion().then(setVersion).catch(() => {}); }, []);
+
+  const run = async () => {
+    setBusy(true);
+    setFailed(false);
+    try {
+      if (pending) {
+        setStatus("Downloading…");
+        await pending.downloadAndInstall();
+        setStatus("Installed — PawPack will restart.");
+        return;
+      }
+      setStatus("Checking…");
+      const update = await check();
+      setPending(update);
+      setStatus(update ? `Version ${update.version} is available.` : "You are on the latest version.");
+    } catch (e) {
+      setFailed(true);
+      setStatus(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-3 px-4 py-3">
+      <Download className="h-4 w-4 shrink-0 text-zinc-600" strokeWidth={1.75} />
+      <div className="min-w-0 flex-1">
+        <div className="text-xs text-zinc-300">PawPack {version && `v${version}`}</div>
+        <div className={cn("text-[11px]", failed ? "text-red-400" : "text-zinc-600")}>
+          {status ?? "Check GitHub for a newer release."}
+        </div>
+      </div>
+      <button
+        onClick={run}
+        disabled={busy}
+        className={cn(
+          "shrink-0 rounded-sm px-2.5 py-1 font-mono text-[10px] uppercase tracking-wide transition-colors disabled:opacity-40",
+          pending
+            ? "bg-amber-500 text-zinc-950 hover:bg-amber-400"
+            : "border border-zinc-800 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200",
+        )}
+      >
+        {pending ? "Install" : "Check"}
+      </button>
     </div>
   );
 }
@@ -282,6 +346,17 @@ export default function Settings() {
         </div>
         <p className="mt-2 text-[11px] text-zinc-700">
           Reverting your cursors always stops the slideshow, whatever this is set to.
+        </p>
+
+        <p className="mb-1.5 mt-5 font-mono text-[10px] uppercase tracking-wide text-zinc-600">
+          About
+        </p>
+        <div className="divide-y divide-zinc-800/60 rounded border border-zinc-800 bg-zinc-950/60">
+          <UpdateRow />
+        </div>
+        <p className="mt-2 text-[11px] text-zinc-700">
+          Updates are downloaded from PawPack's GitHub releases and only install if they
+          carry a valid signature.
         </p>
       </div>
     </div>

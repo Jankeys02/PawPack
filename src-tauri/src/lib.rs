@@ -2271,6 +2271,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // In-app updates. The check itself is driven from the frontend (Settings),
+        // so there is nothing to schedule here — the plugin only has to be loaded.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             list_packs,
             import_pack,
