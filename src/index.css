@@ -128,3 +128,36 @@
     @apply font-sans;
     }
 }
+/* Thumbnail marquee.
+ *
+ * The strip renders its cursors twice and slides exactly one copy's width, so
+ * the loop is seamless — the second copy is under the cursor at the moment the
+ * transform resets. Spacing lives in each tile's margin rather than a flex
+ * `gap`, because a container gap makes the two halves unequal and the reset
+ * lands half a gap off, which reads as a jitter once a second.
+ */
+@keyframes pawpack-marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
+.marquee-track {
+  animation: pawpack-marquee var(--marquee-duration, 30s) linear infinite;
+}
+
+/* Hovering a card is how you look closely at its cursors. */
+.marquee:hover .marquee-track {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marquee-track {
+    animation: none;
+  }
+  /* Without the animation the strip cannot be read by waiting, so give the
+     scrollbar back. */
+  .marquee {
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+}

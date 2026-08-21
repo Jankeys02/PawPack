@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -52,12 +52,16 @@ function PlatformBadge({ platform }: { platform: PackMeta["platform"] }) {
 function CursorThumbnails({ packId }: { packId: string }) {
   const [srcs, setSrcs] = useState<string[]>([]);
   const [loaded, setLoaded] = useState(false);
+  // Only scroll a strip that actually overflows. A six-cursor pack fits, and
+  // animating it would be motion for its own sake on a grid of six cards.
+  const [overflows, setOverflows] = useState(false);
+  const trackRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
-    // The strip scrolls, so show the whole pack rather than an arbitrary first
-    // few. 40 still bounds decode cost — a pack has 17 roles, and even one
-    // shipping every role twice stays under it.
+    // The strip scrolls itself, so show the whole pack rather than an arbitrary
+    // first few. 40 still bounds decode cost — a pack has 17 roles, and even
+    // one shipping every role twice stays under it.
     invoke<string[]>("get_pack_thumbnails", { packId, limit: 40 })
       .then((b64s) => {
         if (!cancelled) {
@@ -69,35 +73,65 @@ function CursorThumbnails({ packId }: { packId: string }) {
     return () => { cancelled = true; };
   }, [packId]);
 
+  // Measured rather than guessed from the cursor count: the card width comes
+  // from the grid, which changes with the window.
+  useEffect(() => {
+    const el = trackRef.current;
+    if (!el) return;
+    const measure = () => setOverflows(el.scrollWidth > el.clientWidth + 1);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [srcs]);
+
   if (loaded && srcs.length === 0) return null;
 
+  const tile = (src: string, key: string) => (
+    <img
+      key={key}
+      src={src}
+      alt=""
+      // 32px, matching Mix and PackDetail. The common 32x32 cursor then lands
+      // 1:1 and is never resampled — at 40px, `pixelated` stretched it by 1.25x
+      // and doubled pixels unevenly. `mr-2` rather than a container `gap`, so
+      // the marquee's two halves are exactly equal width.
+      className="mr-2 h-8 w-8 shrink-0 object-contain"
+      style={{ imageRendering: "pixelated" }}
+    />
+  );
+
   return (
-    // Scrolls horizontally rather than overflowing the card. The inner
-    // `w-max mx-auto` is what centres a short strip while leaving a long one
-    // fully reachable — `justify-center` on the scroller itself would push the
-    // first thumbnails past the left edge, where they cannot be scrolled back
-    // into view.
     <div
-      className="h-16 overflow-x-auto rounded bg-zinc-950/60 px-2 [scrollbar-width:thin]"
+      ref={trackRef}
+      className="marquee h-16 overflow-hidden rounded bg-zinc-950/60 px-2"
       style={{ scrollbarColor: "#3f3f46 transparent" }}
     >
-      <div className="mx-auto flex h-full w-max items-center gap-2">
+      <div
+        className={cn(
+          "flex h-full w-max items-center",
+          // A strip that fits is centred and still; one that overflows loops.
+          overflows ? "marquee-track" : "mx-auto",
+        )}
+        // Constant speed regardless of pack size: roughly one tile per second,
+        // so a 17-cursor pack takes 17s per lap and a 30-cursor pack takes 30.
+        style={{ ["--marquee-duration" as string]: `${Math.max(srcs.length, 1)}s` }}
+      >
         {!loaded
           ? Array.from({ length: 9 }).map((_, i) => (
-              <div key={i} className="h-8 w-8 shrink-0 animate-pulse rounded bg-zinc-800" />
+              <div key={i} className="mr-2 h-8 w-8 shrink-0 animate-pulse rounded bg-zinc-800" />
             ))
-          : srcs.map((src, i) => (
-              <img
-                key={i}
-                src={src}
-                alt=""
-                // 32px, matching Mix and PackDetail. The common 32x32 cursor
-                // then lands 1:1 and is never resampled — at 40px, `pixelated`
-                // stretched it by 1.25x and doubled pixels unevenly.
-                className="h-8 w-8 shrink-0 object-contain"
-                style={{ imageRendering: "pixelated" }}
-              />
-            ))}
+          : overflows
+            // Rendered twice so translating one copy's width loops seamlessly.
+            // aria-hidden on the duplicate: it is the same content again, and a
+            // screen reader announcing every cursor twice helps nobody.
+            ? [
+                ...srcs.map((src, i) => tile(src, `a${i}`)),
+                <div key="dup" aria-hidden className="flex shrink-0">
+                  {srcs.map((src, i) => tile(src, `b${i}`))}
+                </div>,
+              ]
+            : srcs.map((src, i) => tile(src, `a${i}`))}
       </div>
     </div>
   );
