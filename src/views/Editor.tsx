@@ -4,11 +4,12 @@ import {
   RefreshCw, AlertCircle, CheckCircle2, Crosshair, Play, Pause, MousePointer2, Save,
 } from "lucide-react";
 import { cn, bestFrame, frameToDataUrl, frameToCssCursor, type CurFrame } from "@/lib/utils";
+import CursorThumb from "@/components/CursorThumb";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface PackMeta { id: string; name: string; cursor_count: number }
-interface CursorEntry { name: string; kind: string; thumbnail: string }
+interface CursorEntry { name: string; kind: string; thumbnail: string; still: string }
 interface CurInfo { frames: CurFrame[] }
 interface AniInfo {
   frame_count: number;
@@ -299,12 +300,8 @@ export default function Editor() {
             >
               <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-zinc-950/60">
                 {entry.thumbnail ? (
-                  <img
-                    src={`data:image/png;base64,${entry.thumbnail}`}
-                    alt=""
-                    className="h-5 w-5 object-contain"
-                    style={{ imageRendering: "pixelated" }}
-                  />
+                  // badge off: the row already carries an "ani" chip.
+                  <CursorThumb entry={entry} className="h-5 w-5" badge={false} />
                 ) : (
                   <MousePointer2 className="h-3.5 w-3.5 text-zinc-700" strokeWidth={1.25} />
                 )}

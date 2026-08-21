@@ -12,6 +12,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import CursorThumb, { type Thumb } from "@/components/CursorThumb";
 import { ROLE_LABELS, unmatchedReason } from "@/lib/roles";
 import { groupPacks, variantLabel, type PackGroup, type PackMeta } from "@/types";
 import type { Applied, AppliedTarget } from "@/App";
@@ -31,7 +32,8 @@ interface PackAssignmentResult {
 interface CursorEntry {
   name: string;
   kind: string;
-  thumbnail: string; // base64 PNG, empty string when decoding failed
+  thumbnail: string; // base64 PNG (APNG for .ani), empty when decoding failed
+  still: string;      // one frozen frame; same as thumbnail for .cur
 }
 
 
@@ -71,7 +73,7 @@ function AssignmentsDropdown({ packId, isActive, prefetched }: {
   const [result, setResult] = useState<PackAssignmentResult | null>(prefetched);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
-  const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  const [thumbs, setThumbs] = useState<Record<string, Thumb>>({});
 
   const toggle = async () => {
     if (!open && result === null) {
@@ -87,7 +89,7 @@ function AssignmentsDropdown({ packId, isActive, prefetched }: {
     if (!open && Object.keys(thumbs).length === 0) {
       try {
         const cursors = await invoke<CursorEntry[]>("list_pack_cursors", { packId });
-        setThumbs(Object.fromEntries(cursors.map((c) => [c.name, c.thumbnail])));
+        setThumbs(Object.fromEntries(cursors.map((c) => [c.name, c])));
       } catch {
         // Leave thumbs empty; rows fall back to the filename alone.
       }
@@ -164,12 +166,7 @@ function AssignmentsDropdown({ packId, isActive, prefetched }: {
               >
                 <span className="py-1 pl-1">
                   {thumbs[file] ? (
-                    <img
-                      src={`data:image/png;base64,${thumbs[file]}`}
-                      alt=""
-                      className="h-5 w-5 object-contain"
-                      style={{ imageRendering: "pixelated" }}
-                    />
+                    <CursorThumb entry={thumbs[file]} className="h-5 w-5" />
                   ) : (
                     <span className="block h-5 w-5 rounded-sm bg-zinc-800/60" />
                   )}

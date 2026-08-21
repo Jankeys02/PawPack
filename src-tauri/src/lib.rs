@@ -33,7 +33,12 @@ pub struct CurInfo {
 pub struct CursorEntry {
     pub name: String,
     pub kind: String,   // "cur" | "ani"
-    pub thumbnail: String, // base64 PNG, empty string on decode error
+    pub thumbnail: String, // base64 PNG (APNG for .ani), empty string on decode error
+    /// A single frozen frame of `thumbnail`. Identical to it for `.cur`.
+    ///
+    /// APNG plays as soon as it is decoded and no CSS can pause it, so a view
+    /// that wants a still has to be handed a genuinely different image.
+    pub still: String,
 }
 
 /// Parsed contents of a `.ani` (RIFF ACON) animated cursor.
@@ -950,6 +955,38 @@ fn center_on_canvas(
     out
 }
 
+/// `(animated, still)` for one cursor file.
+///
+/// `.cur` has nothing to freeze, so both are the same string and the extra
+/// entry costs nothing. `.ani` re-encodes its largest frame on its own, which
+/// is one small PNG next to the APNG that was being built anyway.
+fn cursor_path_to_b64_pair(path: &Path) -> Result<(String, String), String> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    let animated = cursor_path_to_b64(path)?;
+
+    let is_ani = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("ani"));
+
+    if !is_ani {
+        return Ok((animated.clone(), animated));
+    }
+
+    let data = fs::read(path).map_err(|e| e.to_string())?;
+    let ani = parse_ani_bytes(&data)?;
+    let first = ani
+        .frames
+        .into_iter()
+        .find_map(|f| best_frame(f).ok())
+        .ok_or_else(|| "ANI has no frames".to_string())?;
+    let (w, h, rgba) = cap_frame(first.0, first.1, first.2);
+    let still = STANDARD.encode(still_png(w, h, rgba)?);
+
+    Ok((animated, still))
+}
+
 fn cursor_path_to_b64(path: &Path) -> Result<String, String> {
     use base64::{engine::general_purpose::STANDARD, Engine};
 
@@ -1532,7 +1569,7 @@ async fn get_pack_thumbnails(
     app: tauri::AppHandle,
     pack_id: String,
     limit: usize,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<CursorEntry>, String> {
     let base = packs_dir(&app)?;
     let pack_dir = pack_dir_in(&base, &pack_id)?;
 
@@ -1551,11 +1588,7 @@ async fn get_pack_thumbnails(
 
     files.sort_by_key(|p| p.file_name().map(|n| n.to_os_string()));
 
-    Ok(files
-        .into_iter()
-        .take(limit)
-        .filter_map(|p| cursor_path_to_b64(&p).ok())
-        .collect())
+    Ok(cursor_entries(files, limit))
 }
 
 #[tauri::command]
@@ -1701,8 +1734,17 @@ async fn list_pack_cursors(
 
     files.sort_by_key(|p| p.file_name().map(|n| n.to_os_string()));
 
-    let entries = files
+    Ok(cursor_entries(files, usize::MAX))
+}
+
+/// Decode cursor files into entries, newest listing order preserved.
+///
+/// Shared by `list_pack_cursors` and `get_pack_thumbnails`, which otherwise
+/// walked the same directory and decoded the same files two different ways.
+fn cursor_entries(files: Vec<PathBuf>, limit: usize) -> Vec<CursorEntry> {
+    files
         .into_iter()
+        .take(limit)
         .map(|p| {
             let name = p
                 .file_name()
@@ -1714,12 +1756,10 @@ async fn list_pack_cursors(
                 .and_then(|e| e.to_str())
                 .map(|e| e.to_ascii_lowercase())
                 .unwrap_or_default();
-            let thumbnail = cursor_path_to_b64(&p).unwrap_or_default();
-            CursorEntry { name, kind, thumbnail }
+            let (thumbnail, still) = cursor_path_to_b64_pair(&p).unwrap_or_default();
+            CursorEntry { name, kind, thumbnail, still }
         })
-        .collect();
-
-    Ok(entries)
+        .collect()
 }
 
 #[tauri::command]

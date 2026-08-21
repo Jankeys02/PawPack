@@ -46,3 +46,19 @@ export function setMotionLevel(level: MotionLevel): void {
 export function applyMotion(): void {
   document.documentElement.dataset.motion = motionLevel();
 }
+
+// ── Cursor animation ──────────────────────────────────────────────────────────
+
+const HOVER_KEY = "pawpack:cursorHoverOnly";
+
+/// Whether animated cursors hold still until hovered.
+///
+/// Default on: a pack page can hold thirty `.ani` thumbnails, and thirty
+/// simultaneous loops is noise rather than information.
+export function cursorHoverOnly(): boolean {
+  return localStorage.getItem(HOVER_KEY) !== "0";
+}
+
+export function setCursorHoverOnly(on: boolean): void {
+  localStorage.setItem(HOVER_KEY, on ? "1" : "0");
+}

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Sparkles, Radar, EyeOff, Target, RefreshCw, Clapperboard, Gauge } from "lucide-react";
+import { Sparkles, Radar, EyeOff, Target, RefreshCw, Clapperboard, Gauge, MousePointerClick } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   MOTION_LEVELS,
@@ -8,6 +8,8 @@ import {
   MOTION_DESCRIPTIONS,
   motionLevel,
   setMotionLevel,
+  cursorHoverOnly,
+  setCursorHoverOnly,
   type MotionLevel,
 } from "@/lib/motion";
 
@@ -151,6 +153,7 @@ export default function Settings() {
   // Local to PawPack and read synchronously — no round trip to Windows, and
   // nothing here writes a system setting.
   const [motion, setMotion] = useState<MotionLevel>(motionLevel);
+  const [hoverOnly, setHoverOnly] = useState(cursorHoverOnly);
 
   const load = () => {
     setLoading(true);
@@ -247,6 +250,15 @@ export default function Settings() {
           <MotionRow
             level={motion}
             onChange={(l) => { setMotionLevel(l); setMotion(l); }}
+          />
+          <ToggleRow
+            Icon={MousePointerClick}
+            label="Animate cursors on hover only"
+            description="Animated cursors hold on one frame and are tagged .ani until you point at them."
+            enabled={hoverOnly}
+            busy={false}
+            error={null}
+            onToggle={() => { setCursorHoverOnly(!hoverOnly); setHoverOnly(!hoverOnly); }}
           />
         </div>
         <p className="mt-2 text-[11px] text-zinc-700">

@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, MousePointer2, RefreshCw, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
+import CursorThumb from "@/components/CursorThumb";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -11,6 +12,7 @@ interface CursorEntry {
   name: string;
   kind: string;
   thumbnail: string;
+  still: string;
 }
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
@@ -23,12 +25,8 @@ function CursorTile({ entry }: { entry: CursorEntry }) {
     <div className="group flex flex-col items-center gap-2 rounded-sm border border-zinc-800 bg-zinc-900 p-3 transition-colors hover:border-zinc-700">
       <div className="flex h-14 w-14 items-center justify-center rounded bg-zinc-950/60">
         {entry.thumbnail ? (
-          <img
-            src={`data:image/png;base64,${entry.thumbnail}`}
-            alt={stem}
-            className="h-10 w-10 object-contain"
-            style={{ imageRendering: "pixelated" }}
-          />
+          // badge off: this tile already spells out "ani" underneath.
+          <CursorThumb entry={entry} className="h-10 w-10" badge={false} />
         ) : (
           <MousePointer2 className="h-6 w-6 text-zinc-700" strokeWidth={1.25} />
         )}

@@ -14,6 +14,7 @@ import {
   FolderOpen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import CursorThumb, { type Thumb } from "@/components/CursorThumb";
 import { groupPacks, variantLabel, type PackGroup, type PackMeta } from "@/types";
 import { Button } from "@/components/ui/button";
 import {
@@ -50,7 +51,7 @@ function PlatformBadge({ platform }: { platform: PackMeta["platform"] }) {
 }
 
 function CursorThumbnails({ packId }: { packId: string }) {
-  const [srcs, setSrcs] = useState<string[]>([]);
+  const [srcs, setSrcs] = useState<Thumb[]>([]);
   const [loaded, setLoaded] = useState(false);
   // Only scroll a strip that actually overflows. A six-cursor pack fits, and
   // animating it would be motion for its own sake on a grid of six cards.
@@ -62,10 +63,10 @@ function CursorThumbnails({ packId }: { packId: string }) {
     // The strip scrolls itself, so show the whole pack rather than an arbitrary
     // first few. 40 still bounds decode cost — a pack has 17 roles, and even
     // one shipping every role twice stays under it.
-    invoke<string[]>("get_pack_thumbnails", { packId, limit: 40 })
-      .then((b64s) => {
+    invoke<Thumb[]>("get_pack_thumbnails", { packId, limit: 40 })
+      .then((entries) => {
         if (!cancelled) {
-          setSrcs(b64s.map((b) => `data:image/png;base64,${b}`));
+          setSrcs(entries);
           setLoaded(true);
         }
       })
@@ -87,18 +88,10 @@ function CursorThumbnails({ packId }: { packId: string }) {
 
   if (loaded && srcs.length === 0) return null;
 
-  const tile = (src: string, key: string) => (
-    <img
-      key={key}
-      src={src}
-      alt=""
-      // 32px, matching Mix and PackDetail. The common 32x32 cursor then lands
-      // 1:1 and is never resampled — at 40px, `pixelated` stretched it by 1.25x
-      // and doubled pixels unevenly. `mr-2` rather than a container `gap`, so
-      // the marquee's two halves are exactly equal width.
-      className="mr-2 h-8 w-8 shrink-0 object-contain"
-      style={{ imageRendering: "pixelated" }}
-    />
+  const tile = (entry: Thumb, key: string) => (
+    // `mr-2` rather than a container `gap`, so the marquee's two halves are
+    // exactly equal width and the loop reset lands on the seam.
+    <CursorThumb key={key} entry={entry} className="mr-2 h-8 w-8" />
   );
 
   return (
@@ -126,12 +119,12 @@ function CursorThumbnails({ packId }: { packId: string }) {
             // aria-hidden on the duplicate: it is the same content again, and a
             // screen reader announcing every cursor twice helps nobody.
             ? [
-                ...srcs.map((src, i) => tile(src, `a${i}`)),
+                ...srcs.map((e, i) => tile(e, `a${i}`)),
                 <div key="dup" aria-hidden className="flex shrink-0">
-                  {srcs.map((src, i) => tile(src, `b${i}`))}
+                  {srcs.map((e, i) => tile(e, `b${i}`))}
                 </div>,
               ]
-            : srcs.map((src, i) => tile(src, `a${i}`))}
+            : srcs.map((e, i) => tile(e, `a${i}`))}
       </div>
     </div>
   );

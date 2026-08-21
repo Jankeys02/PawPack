@@ -1,10 +1,13 @@
 import { cn } from "@/lib/utils";
+import CursorThumb from "@/components/CursorThumb";
 
 export interface CursorEntry {
   name: string;
   kind: string;
-  /** base64 PNG; empty string when decoding failed. */
+  /** base64 PNG (APNG for .ani); empty string when decoding failed. */
   thumbnail: string;
+  /** One frozen frame, same as `thumbnail` for .cur. */
+  still: string;
 }
 
 export interface PackCursors {
@@ -60,16 +63,7 @@ export default function CursorGallery({
                       : "border-zinc-800 hover:border-amber-500/40",
                   )}
                 >
-                  {c.thumbnail ? (
-                    <img
-                      src={`data:image/png;base64,${c.thumbnail}`}
-                      alt={c.name}
-                      className="h-8 w-8 object-contain"
-                      style={{ imageRendering: "pixelated" }}
-                    />
-                  ) : (
-                    <span className="font-mono text-[9px] text-zinc-700">?</span>
-                  )}
+                  <CursorThumb entry={c} className="h-8 w-8" />
                   {badge !== null && (
                     <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-500 font-mono text-[9px] font-semibold text-zinc-950">
                       {badge}
