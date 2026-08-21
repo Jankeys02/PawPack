@@ -24,6 +24,10 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # A release that builds for nine minutes and then fails on the last
+          # API call still did nine minutes of useful compiling. Without this,
+          # that work is thrown away and the retry starts cold.
+          cache-on-failure: true
 
       - run: npm ci
 
