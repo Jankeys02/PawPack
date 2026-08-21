@@ -30,6 +30,13 @@ secret does not exist — which is the value we want, so there is nothing to add
 If you ever regenerate the key, **every already-installed copy of PawPack stops
 being able to update** — those users have to reinstall by hand. Back the file up.
 
+The workflow also needs the Actions token to be able to write. Settings →
+Actions → General → Workflow permissions → **Read and write permissions**. The
+`permissions: contents: write` block in `release.yml` cannot raise the token
+above this repo-level setting, only lower it — leave it on read and the release
+builds and signs everything, then fails on the last step with "Resource not
+accessible by integration".
+
 ## Cutting a release
 
 ### 1. Bump the version in all three places
