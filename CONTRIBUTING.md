@@ -24,13 +24,20 @@ npm run tauri dev
 npm run build
 ```
 
-`build` runs `tsc` then `vite build`; there's no separate test suite yet.
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+`build` runs `tsc` then `vite build`. CI runs both of these on every PR and both
+have to pass before it can merge.
 
 ## Making a change
 
-1. Branch off `main`.
+1. Branch off `main` — `main` is protected, so direct pushes are rejected.
 2. Keep the change focused — one PR, one purpose.
 3. Open the PR against `main` and fill in the template.
+4. A PR needs one approving review from a code owner
+   ([CODEOWNERS](.github/CODEOWNERS)) before it can merge.
 
 ## Reporting bugs / requesting features
 
