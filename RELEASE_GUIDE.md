@@ -78,6 +78,23 @@ git checkout main && git pull
 git tag -a v1.1.0 -m "Release version 1.1.0" && git push origin v1.1.0
 ```
 
+### 3b. Create the draft release first (known issue)
+
+Before the tag build finishes, create the draft yourself:
+
+```bash
+gh release create v1.1.0 --draft --title "PawPack v1.1.0" --notes "placeholder"
+```
+
+`tauri-action` looks for an existing draft with the tag and uploads into it. Left
+to create one itself, it fails with "Resource not accessible by integration" —
+even with `Contents: write` on the token, confirmed in the run's setup log. The
+cause is not understood; uploading to a release that already exists works fine,
+and creating one with a personal token works fine. Until someone gets to the
+bottom of it, pre-creating the draft is the workaround, and it costs nothing.
+
+The v1.0.0 release burned three full builds on this. Do this step.
+
 ### 4. Publish
 
 The workflow leaves a draft release, with the notes already filled in from the
