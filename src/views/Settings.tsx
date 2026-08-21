@@ -1,7 +1,15 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Sparkles, Radar, EyeOff, Target, RefreshCw, Clapperboard } from "lucide-react";
+import { Sparkles, Radar, EyeOff, Target, RefreshCw, Clapperboard, Gauge } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  MOTION_LEVELS,
+  MOTION_LABELS,
+  MOTION_DESCRIPTIONS,
+  motionLevel,
+  setMotionLevel,
+  type MotionLevel,
+} from "@/lib/motion";
 
 // ── Settings table ─────────────────────────────────────────────────────────────
 
@@ -87,6 +95,56 @@ function ToggleRow({
   );
 }
 
+/// Three-step motion slider. A native range input rather than a custom track:
+/// it is keyboard-operable and screen-reader-labelled for free, which a div
+/// with a drag handler is not.
+function MotionRow({
+  level,
+  onChange,
+}: {
+  level: MotionLevel;
+  onChange: (level: MotionLevel) => void;
+}) {
+  const index = MOTION_LEVELS.indexOf(level);
+
+  return (
+    <div className="flex items-start gap-3 px-4 py-3">
+      <Gauge className="mt-px h-4 w-4 shrink-0 text-zinc-600" strokeWidth={1.75} />
+      <div className="min-w-0 flex-1">
+        <div className="text-xs text-zinc-300">Animation</div>
+        <div className="text-[11px] text-zinc-600">{MOTION_DESCRIPTIONS[level]}</div>
+
+        <input
+          type="range"
+          min={0}
+          max={MOTION_LEVELS.length - 1}
+          step={1}
+          value={index}
+          aria-label="Animation level"
+          aria-valuetext={MOTION_LABELS[level]}
+          onChange={(e) => onChange(MOTION_LEVELS[Number(e.target.value)])}
+          className="mt-2.5 h-1 w-full cursor-pointer appearance-none rounded-full bg-zinc-700 accent-amber-500"
+        />
+
+        <div className="mt-1 flex justify-between">
+          {MOTION_LEVELS.map((l) => (
+            <button
+              key={l}
+              onClick={() => onChange(l)}
+              className={cn(
+                "font-mono text-[10px] uppercase tracking-wide transition-colors",
+                l === level ? "text-amber-400" : "text-zinc-600 hover:text-zinc-400",
+              )}
+            >
+              {MOTION_LABELS[l]}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main view ─────────────────────────────────────────────────────────────────
 
 /** Only the fields Settings needs from `SlideshowState`. */
@@ -102,6 +160,9 @@ export default function Settings() {
   // Null until read. PawPack's own settings live in slideshow.json, not in a
   // preferences store — this is currently the only one.
   const [slideshow, setSlideshow] = useState<SlideshowSetting | null>(null);
+  // Local to PawPack and read synchronously — no round trip to Windows, and
+  // nothing here writes a system setting.
+  const [motion, setMotion] = useState<MotionLevel>(motionLevel);
 
   const load = () => {
     setLoading(true);
@@ -189,6 +250,20 @@ export default function Settings() {
           These are Windows' own pointer settings, the same ones in Mouse Properties.
           PawPack stores nothing — changes are written straight to Windows and take effect
           immediately.
+        </p>
+
+        <p className="mb-1.5 mt-5 font-mono text-[10px] uppercase tracking-wide text-zinc-600">
+          Appearance
+        </p>
+        <div className="rounded border border-zinc-800 bg-zinc-950/60">
+          <MotionRow
+            level={motion}
+            onChange={(l) => { setMotionLevel(l); setMotion(l); }}
+          />
+        </div>
+        <p className="mt-2 text-[11px] text-zinc-700">
+          PawPack only. This does not change Windows' animation settings — it starts off
+          matching them, and after that it is the one that counts.
         </p>
 
         <p className="mb-1.5 mt-5 font-mono text-[10px] uppercase tracking-wide text-zinc-600">

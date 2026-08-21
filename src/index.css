@@ -150,14 +150,21 @@
   animation-play-state: paused;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .marquee-track {
-    animation: none;
-  }
-  /* Without the animation the strip cannot be read by waiting, so give the
-     scrollbar back. */
-  .marquee {
-    overflow-x: auto;
-    scrollbar-width: thin;
-  }
+/* Motion level, set on <html> by src/lib/motion.ts. Seeded from the Windows
+ * reduced-motion setting, then owned by PawPack's own slider — the OS value is
+ * a default here, not a permanent override. "full" needs no rules; it is what
+ * the base animation above already does. */
+:root[data-motion="slow"] .marquee-track {
+  animation-duration: calc(var(--marquee-duration, 30s) * 3);
+}
+
+:root[data-motion="off"] .marquee-track {
+  animation: none;
+}
+
+/* Without the animation the strip cannot be read by waiting, so give the
+   scrollbar back. */
+:root[data-motion="off"] .marquee {
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
