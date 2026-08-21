@@ -183,6 +183,28 @@ fn schtasks(args: &[&str]) -> Result<std::process::Output, String> {
 ///
 /// The task runs as the current user with no elevation: rotation only writes
 /// HKCU and reads files PawPack already owns.
+///
+/// It also runs "interactive only" (schtasks' default), and must. `rotate_once`
+/// ends in `SystemParametersInfoW(SPI_SETCURSORS)`, whose broadcast only
+/// reaches the desktop from inside the user's own session. Registering with
+/// `/ru <user> /np` instead — "run whether the user is logged on or not" — puts
+/// the task in session 0, where the registry write still lands but the
+/// broadcast goes nowhere, so cursors would not visibly change until the next
+/// sign-in.
+///
+/// The visible cost of staying interactive: in a *debug* build the exe is
+/// console-subsystem (see the cfg_attr in main.rs, which is what keeps
+/// `println!` working during development), so Windows gives each tick a console
+/// window that briefly flashes on screen. `run()` calls `FreeConsole` as its
+/// first act, which shortens the flash but cannot prevent it — the console is
+/// allocated before `main` runs. Release builds are windows-subsystem and
+/// allocate none, so this is a development-only annoyance and deliberately not
+/// worth a second binary to fix.
+///
+/// One more consequence worth knowing: the task stores whichever executable
+/// registered it. Registering from `tauri dev` points it at `target/debug`,
+/// which breaks on `cargo clean` or if the repo moves. Starting the slideshow
+/// from an installed build re-points it somewhere stable.
 #[cfg(target_os = "windows")]
 pub fn register_task(interval_minutes: u32) -> Result<(), String> {
     // Task Scheduler cannot repeat faster than once a minute.
