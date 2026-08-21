@@ -27,6 +27,31 @@ jobs:
 
       - run: npm ci
 
+      # Pull the section for this tag out of CHANGELOG.md so the release notes
+      # are the changelog rather than a pointer to it. index() instead of a
+      # dynamic regex: the version has dots in it, and building a regex from a
+      # shell variable is how that goes wrong quietly.
+      - name: Read release notes from CHANGELOG
+        id: notes
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          body=$(awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { f = 1; next }
+            f && (/^## / || /^\[[^]]*\]: /) { exit }
+            f { print }
+          ' CHANGELOG.md)
+          # No matching section is not worth failing a release over, but it
+          # should be obvious in the draft that the changelog was not updated.
+          if [ -z "$(printf %s "$body" | tr -d "[:space:]")" ]; then
+            body="No CHANGELOG entry for $version."
+          fi
+          {
+            echo 'body<<CHANGELOG_EOF'
+            echo "$body"
+            echo 'CHANGELOG_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -37,7 +62,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: PawPack ${{ github.ref_name }}
-          releaseBody: See CHANGELOG.md for what changed.
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true

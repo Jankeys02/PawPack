@@ -73,10 +73,15 @@ git tag -a v1.1.0 -m "Release version 1.1.0" && git push origin v1.1.0
 
 ### 4. Publish
 
-The workflow leaves a draft release. Check the bundles are attached and
-`latest.json` is there, write the release notes, then publish it. Existing
-installs pick the update up the next time someone hits **Settings → About →
-Check**.
+The workflow leaves a draft release, with the notes already filled in from the
+`[1.1.0]` section of `CHANGELOG.md` — that is why step 2 comes before the tag.
+If the notes read "No CHANGELOG entry for 1.1.0", you tagged without updating
+the changelog; fix the changelog and re-run the workflow, or paste the section
+in by hand.
+
+Check the bundles are attached and `latest.json` is there, then publish.
+Existing installs pick the update up the next time someone hits **Settings →
+About → Check**.
 
 ## Building locally
 
