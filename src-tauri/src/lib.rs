@@ -2213,6 +2213,15 @@ pub fn run() {
     // `tauri::Builder`, or every tick would flash the UI.
     #[cfg(target_os = "windows")]
     if std::env::args().any(|a| a == "--rotate") {
+        // Debug builds are console-subsystem (see the cfg_attr in main.rs, which
+        // keeps println! working during development), so Windows hands this
+        // process a console window that the scheduled task would otherwise flash
+        // on screen every tick. Release builds never allocate one, but dev is
+        // where anyone actually watches the rotation happen.
+        unsafe {
+            let _ = windows::Win32::System::Console::FreeConsole();
+        }
+
         if let Ok(base) = slideshow::packs_base_from_env() {
             let _ = slideshow::rotate_once(&base);
         }
