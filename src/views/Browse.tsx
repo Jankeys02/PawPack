@@ -55,7 +55,10 @@ function CursorThumbnails({ packId }: { packId: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    invoke<string[]>("get_pack_thumbnails", { packId, limit: 9 })
+    // The strip scrolls, so show the whole pack rather than an arbitrary first
+    // few. 40 still bounds decode cost — a pack has 17 roles, and even one
+    // shipping every role twice stays under it.
+    invoke<string[]>("get_pack_thumbnails", { packId, limit: 40 })
       .then((b64s) => {
         if (!cancelled) {
           setSrcs(b64s.map((b) => `data:image/png;base64,${b}`));
@@ -74,7 +77,10 @@ function CursorThumbnails({ packId }: { packId: string }) {
     // fully reachable — `justify-center` on the scroller itself would push the
     // first thumbnails past the left edge, where they cannot be scrolled back
     // into view.
-    <div className="h-16 overflow-x-auto rounded bg-zinc-950/60 px-2 [scrollbar-width:thin]">
+    <div
+      className="h-16 overflow-x-auto rounded bg-zinc-950/60 px-2 [scrollbar-width:thin]"
+      style={{ scrollbarColor: "#3f3f46 transparent" }}
+    >
       <div className="mx-auto flex h-full w-max items-center gap-2">
         {!loaded
           ? Array.from({ length: 9 }).map((_, i) => (
@@ -85,7 +91,10 @@ function CursorThumbnails({ packId }: { packId: string }) {
                 key={i}
                 src={src}
                 alt=""
-                className="h-10 w-10 shrink-0 object-contain"
+                // 32px, matching Mix and PackDetail. The common 32x32 cursor
+                // then lands 1:1 and is never resampled — at 40px, `pixelated`
+                // stretched it by 1.25x and doubled pixels unevenly.
+                className="h-8 w-8 shrink-0 object-contain"
                 style={{ imageRendering: "pixelated" }}
               />
             ))}
