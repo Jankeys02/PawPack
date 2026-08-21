@@ -23,13 +23,12 @@ it does not print the key):
 gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/pawpack-updater.key
 ```
 
-```bash
-gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --body ""
-```
+That is the only secret to set. The key was generated without a password, and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` interpolates to an empty string when the
+secret does not exist — which is the value we want, so there is nothing to add.
 
-The key was generated without a password, hence the empty second secret. If you
-ever regenerate the key, **every already-installed copy of PawPack stops being
-able to update** — those users have to reinstall by hand. Back the file up.
+If you ever regenerate the key, **every already-installed copy of PawPack stops
+being able to update** — those users have to reinstall by hand. Back the file up.
 
 ## Cutting a release
 
