@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   release:
+    name: Build & publish (Windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -70,3 +71,29 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
+
+      # The run page shows one tile per job, and this is deliberately one job:
+      # splitting it would push ~9 MB of bundles through upload/download-artifact
+      # and take latest.json out of tauri-action's hands. A summary puts the
+      # useful detail on that page instead. always(), because a failed release is
+      # exactly when you want to see what was built before it died.
+      - name: Summarise the build
+        if: always()
+        shell: bash
+        run: |
+          bundle=src-tauri/target/release/bundle
+          # Scoped to this tag's version: rust-cache restores target/, so a
+          # previous release's bundles can still be sitting there.
+          version="${GITHUB_REF_NAME#v}"
+          {
+            echo "## PawPack ${GITHUB_REF_NAME}"
+            echo
+            echo "| Artifact | Size | SHA-256 (first 16) |"
+            echo "|---|---:|---|"
+            for f in "$bundle"/msi/*_${version}_*.msi "$bundle"/nsis/*_${version}_*.exe; do
+              [ -f "$f" ] || continue
+              mb=$(awk -v b="$(stat -c%s "$f")" 'BEGIN{printf "%.1f", b/1048576}')
+              sum=$(sha256sum "$f" | cut -c1-16)
+              echo "| $(basename "$f") | $mb MB | $sum |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
