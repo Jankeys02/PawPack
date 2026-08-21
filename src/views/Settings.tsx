@@ -95,9 +95,10 @@ function ToggleRow({
   );
 }
 
-/// Three-step motion slider. A native range input rather than a custom track:
-/// it is keyboard-operable and screen-reader-labelled for free, which a div
-/// with a drag handler is not.
+/// Three-step motion slider, laid out like ToggleRow so the two sit in one
+/// list: icon, label and description, control on the right. A native range
+/// input rather than a custom track — keyboard-operable and screen-reader
+/// labelled for free, which a div with a drag handler is not.
 function MotionRow({
   level,
   onChange,
@@ -108,39 +109,26 @@ function MotionRow({
   const index = MOTION_LEVELS.indexOf(level);
 
   return (
-    <div className="flex items-start gap-3 px-4 py-3">
-      <Gauge className="mt-px h-4 w-4 shrink-0 text-zinc-600" strokeWidth={1.75} />
+    <div className="flex items-center gap-3 px-4 py-3">
+      <Gauge className="h-4 w-4 shrink-0 text-zinc-600" strokeWidth={1.75} />
       <div className="min-w-0 flex-1">
         <div className="text-xs text-zinc-300">Animation</div>
         <div className="text-[11px] text-zinc-600">{MOTION_DESCRIPTIONS[level]}</div>
-
-        <input
-          type="range"
-          min={0}
-          max={MOTION_LEVELS.length - 1}
-          step={1}
-          value={index}
-          aria-label="Animation level"
-          aria-valuetext={MOTION_LABELS[level]}
-          onChange={(e) => onChange(MOTION_LEVELS[Number(e.target.value)])}
-          className="mt-2.5 h-1 w-full cursor-pointer appearance-none rounded-full bg-zinc-700 accent-amber-500"
-        />
-
-        <div className="mt-1 flex justify-between">
-          {MOTION_LEVELS.map((l) => (
-            <button
-              key={l}
-              onClick={() => onChange(l)}
-              className={cn(
-                "font-mono text-[10px] uppercase tracking-wide transition-colors",
-                l === level ? "text-amber-400" : "text-zinc-600 hover:text-zinc-400",
-              )}
-            >
-              {MOTION_LABELS[l]}
-            </button>
-          ))}
-        </div>
       </div>
+      <span className="shrink-0 font-mono text-[10px] uppercase tracking-wide text-amber-400">
+        {MOTION_LABELS[level]}
+      </span>
+      <input
+        type="range"
+        min={0}
+        max={MOTION_LEVELS.length - 1}
+        step={1}
+        value={index}
+        aria-label="Animation level"
+        aria-valuetext={MOTION_LABELS[level]}
+        onChange={(e) => onChange(MOTION_LEVELS[Number(e.target.value)])}
+        className="h-1 w-20 shrink-0 cursor-pointer appearance-none rounded-full bg-zinc-700 accent-amber-500"
+      />
     </div>
   );
 }
@@ -255,7 +243,7 @@ export default function Settings() {
         <p className="mb-1.5 mt-5 font-mono text-[10px] uppercase tracking-wide text-zinc-600">
           Appearance
         </p>
-        <div className="rounded border border-zinc-800 bg-zinc-950/60">
+        <div className="divide-y divide-zinc-800/60 rounded border border-zinc-800 bg-zinc-950/60">
           <MotionRow
             level={motion}
             onChange={(l) => { setMotionLevel(l); setMotion(l); }}
